@@ -268,7 +268,16 @@ export class HopStack extends cdk.Stack {
         },
       }),
     });
-    agentCode.grantRead(agentRole);
+    // Solo el zip del agente, no todo el bucket de assets de CDK (que comparten otros proyectos).
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'ReadAgentCode',
+        actions: ['s3:GetObject', 's3:GetObjectVersion'],
+        resources: [agentCode.bucket.arnForObjects(agentCode.s3ObjectKey)],
+      }),
+    );
+    const agentRuntimeName = `${PREFIX.replace(/-/g, '_')}_agent`;
+    const inferenceProfileArn = `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/${agentModelId}`;
     // Tools de consulta: solo lectura de paquetes (por tracking y por teléfono vía GSI) y Puntos HOP.
     this.packagesTable.grant(agentRole, 'dynamodb:GetItem', 'dynamodb:Query');
     this.hopPointsTable.grant(agentRole, 'dynamodb:GetItem');
@@ -276,11 +285,17 @@ export class HopStack extends cdk.Stack {
       new iam.PolicyStatement({
         sid: 'InvokeClaude',
         actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
-        resources: [
-          `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/${agentModelId}`,
-          // El perfil `us.` enruta a los foundation models de Claude en las regiones de EE. UU.
-          'arn:aws:bedrock:*::foundation-model/anthropic.claude-*',
-        ],
+        resources: [inferenceProfileArn],
+      }),
+    );
+    // El perfil `us.` enruta a los foundation models de Claude en las regiones de EE. UU.; se
+    // permiten solo cuando la llamada viene a través de ESTE perfil de inferencia.
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'InvokeClaudeViaProfile',
+        actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+        resources: ['arn:aws:bedrock:*::foundation-model/anthropic.claude-*'],
+        conditions: { StringEquals: { 'bedrock:InferenceProfileArn': inferenceProfileArn } },
       }),
     );
     agentRole.addToPolicy(
@@ -322,7 +337,7 @@ export class HopStack extends cdk.Stack {
         ],
         resources: [
           `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default`,
-          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default/workload-identity/${PREFIX}_agent-*`,
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default/workload-identity/${agentRuntimeName}-*`,
         ],
       }),
     );
@@ -338,11 +353,7 @@ export class HopStack extends cdk.Stack {
             'Resource::arn:aws:bedrock:*::foundation-model/anthropic.claude-*',
             `Resource::arn:aws:logs:${this.region}:${this.account}:log-group:/aws/bedrock-agentcore/runtimes/*`,
             `Resource::arn:aws:logs:${this.region}:${this.account}:log-group:*`,
-            `Resource::arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default/workload-identity/${PREFIX}_agent-*`,
-            'Action::s3:GetObject*',
-            'Action::s3:GetBucket*',
-            'Action::s3:List*',
-            { regex: '/^Resource::arn:(aws|<AWS::Partition>):s3:::cdk-hnb659fds-assets-.*\\/\\*$/g' },
+            `Resource::arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default/workload-identity/${agentRuntimeName}-*`,
             `Resource::<${this.getLogicalId(this.packagesTable.node.defaultChild as dynamodb.CfnTable)}.Arn>/index/*`,
           ],
         },
@@ -351,7 +362,7 @@ export class HopStack extends cdk.Stack {
     );
 
     this.agentRuntime = new agentcore.CfnRuntime(this, 'AgentRuntime', {
-      agentRuntimeName: `${PREFIX.replace(/-/g, '_')}_agent`,
+      agentRuntimeName,
       description: 'HOP hackathon - agente de seguimiento de paquetes (Strands, TypeScript)',
       roleArn: agentRole.roleArn,
       agentRuntimeArtifact: {
@@ -375,6 +386,15 @@ export class HopStack extends cdk.Stack {
       },
     });
     this.agentRuntime.node.addDependency(agentRole);
+
+    // AgentCore crea el log group del endpoint DEFAULT sin retención. Se declara acá para que
+    // tenga retención y se borre con el stack. Si el nombre no coincidiera con el que usa el
+    // servicio, queda un log group vacío sin otro efecto.
+    new logs.LogGroup(this, 'AgentRuntimeLogs', {
+      logGroupName: `/aws/bedrock-agentcore/runtimes/${this.agentRuntime.attrAgentRuntimeId}-DEFAULT`,
+      retention: logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
 
     // La Lambda inbound invoca el runtime (endpoint DEFAULT).
     this.inboundRouterFn.addEnvironment(ENV.AGENT_RUNTIME_ARN, this.agentRuntime.attrAgentRuntimeArn);

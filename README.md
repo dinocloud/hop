@@ -157,7 +157,8 @@ Garantías:
 
 El agente de seguimiento para el cliente final corre en **Amazon Bedrock AgentCore Runtime** con **deploy de código directo** (runtime `NODE_22`): el bundle de `agent/src` se sube a S3 como asset y el runtime lo carga, sin contenedor ni Docker. Está escrito con `@strands-agents/sdk` (TypeScript) y el servidor del runtime lo da `bedrock-agentcore/runtime` (`/invocations`, `/ping`, sesión).
 
-- **Contrato**: request `{ phone, text }`, response `{ text, location | null }`. Si viene `location`, la Lambda inbound manda además el pin de WhatsApp. La respuesta se pide como salida estructurada (zod); si el modelo no la cumple, se cae a texto plano sin ubicación.
+- **Contrato** (`src/lib/agent-contract.ts`): request `{ phone, text }`, response `{ text, location | null }`. Si viene `location`, la Lambda inbound manda además el pin de WhatsApp. El modelo devuelve JSON `{ text, hopPointId | null }`; la ubicación la arma el servidor desde DynamoDB, así el modelo no puede inventar coordenadas. Si el modelo no devuelve JSON válido, su texto va tal cual, sin pin. No se fuerza salida estructurada ni se tocan los parámetros de muestreo (los Claude recientes rechazan `toolChoice` forzado y temperaturas distintas de la de fábrica).
+- **Límites**: 6 vueltas de tools, 4096 tokens de salida, 40 s por invocación (la Lambda tiene 60 s), ventana de 12 mensajes por sesión. Una sesión procesa de a un mensaje (los mensajes seguidos del mismo cliente se encolan) y, si una invocación falla, la sesión se descarta para no dejar un hilo inconsistente.
 - **Tools** (`agent/src/tools.ts`): `get_my_packages` (usa el teléfono de la sesión, nunca uno que diga el usuario), `get_package_by_tracking` (solo si el paquete es del cliente) y `get_hop_point`. Las tools no devuelven teléfonos ni datos internos.
 - **Sesión**: AgentCore aísla cada `sessionId` en su propia instancia; un agente en memoria por sesión conserva el hilo. La Lambda inbound usa el `sessionId` de la conversación.
 - **Modelo**: contexto `hop:agentModelId` (`us.anthropic.claude-sonnet-5-5`), `maxTokens` explícito. El rol del runtime solo puede invocar ese perfil de inferencia y los foundation models de Claude a los que enruta.
@@ -168,6 +169,7 @@ Local:
 
 ```bash
 npm run build:agent                       # agent/dist/index.js (CommonJS, ~2.5 MB)
+npm run smoke:agent                       # carga el bundle en una carpeta sin node_modules, como en el runtime
 cd agent/dist && PACKAGES_TABLE=x HOP_POINTS_TABLE=x CONVERSATIONS_TABLE=x INBOUND_MESSAGES_TABLE=x AWS_REGION=us-east-1 node index.js
 curl -s localhost:8080/ping
 curl -s -X POST localhost:8080/invocations -H 'content-type: application/json' \

@@ -18,7 +18,8 @@
     "deploy:ci-role": "cdk deploy HopHackathonCi",
     "seed": "tsx scripts/seed.ts",
     "cdk": "cdk",
-    "send:test": "tsx scripts/send-test.ts"
+    "send:test": "tsx scripts/send-test.ts",
+    "smoke:agent": "node scripts/smoke-agent.mjs"
   },
   "devDependencies": {
     "@aws-sdk/client-ssm": "^3.1152.0",

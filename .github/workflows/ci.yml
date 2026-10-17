@@ -45,6 +45,10 @@ jobs:
       - name: Build agent bundle
         run: npm run build:agent
 
+      # Carga el bundle en una carpeta sin node_modules, como en AgentCore Runtime.
+      - name: Smoke agent bundle
+        run: npm run smoke:agent
+
       - name: Synth (cdk-nag)
         run: npm run synth
 

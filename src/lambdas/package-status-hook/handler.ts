@@ -82,7 +82,8 @@ export function createHandler(deps: HookDeps) {
   };
 
   async function handle(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
-    const trackingId = event.pathParameters?.trackingId ?? '';
+    // Los trackings se guardan y buscan siempre en mayúsculas.
+    const trackingId = (event.pathParameters?.trackingId ?? '').toUpperCase();
     if (!TRACKING_ID.test(trackingId)) {
       logger.warn('trackingId inválido', { length: trackingId.length });
       return json(400, { error: 'trackingId inválido' });
