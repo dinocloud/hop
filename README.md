@@ -39,7 +39,8 @@ El stack usa `aws-phone-number-id` (el ID de AWS, `phone-number-id-...`) como or
 |---|---|---|
 | `hop-hackathon-packages` | PK `trackingId`; GSI `byPhone` (PK `phone`, SK `updatedAt`) | `customerName`, `status` (`IN_TRANSIT` · `READY_AT_HOP` · `DELIVERED` · `RETURNED`), `hopPointId`, `deadlineAt`, `scheduledAt`, `updatedAt` |
 | `hop-hackathon-hop-points` | PK `id` | `name`, `address`, `lat`, `lng`, `openingHours` |
-| `hop-hackathon-conversations` | PK `phone` | `lastInboundAt`, `sessionId`, `lastMessageId`, `lastTrackingId` |
+| `hop-hackathon-conversations` | PK `phone` | `lastInboundAt`, `sessionId`, `lastTrackingId` |
+| `hop-hackathon-inbound-messages` | PK `messageId`; TTL `expiresAt` | `status` (`PROCESSING` · `DONE`), `leaseUntil`, `updatedAt`. Un ítem por mensaje de WhatsApp para procesarlo exactamente una vez |
 
 Los tipos están en `src/lib/types.ts`. Los teléfonos van siempre en E.164 **con `+`** (`+5491112345678`): End User Messaging Social lo exige al enviar.
 
@@ -101,7 +102,16 @@ Un solo módulo para las dos Lambdas, sobre `SendWhatsAppMessage` de End User Me
 | `sendText(phone, text)` | Respuestas del agente | Obligatoria: lanza `OutsideWindowError` si el cliente no escribió en las últimas 24 h |
 | `sendLocation(phone, {lat, lng, name, address})` | Pin del Punto HOP | Obligatoria |
 
-Detalles que importan: el destino se normaliza a E.164 **con `+`** (AWS lo exige), el body sigue el formato de la Cloud API de Meta y el ID del número sale de `PHONE_NUMBER_ID` (que el stack llena desde SSM). `src/lib/dynamo.ts` expone los repos tipados de las tres tablas, con `touchInbound` para abrir la ventana, asignar `sessionId` y deduplicar por `messageId`.
+Detalles que importan:
+
+- El destino se normaliza a E.164 **con `+`** (AWS lo exige). Un número sin `+` se rechaza: completarlo a ciegas podría convertir un número local en un E.164 válido de otro país. El `from` del webhook de Meta viene sin `+`; para esa fuente está `fromWaId` en `src/lib/phone.ts`.
+- La ventana local se cierra 5 minutos antes que la de Meta, como margen para reintentos y relojes.
+- Los textos de más de 4096 caracteres se parten en varios mensajes; los parámetros de plantilla se sanean (Meta rechaza vacíos, saltos de línea y tabs).
+- El cliente del SDK no reintenta: `SendWhatsAppMessage` no es idempotente y un timeout después de aceptado duplicaría el mensaje.
+- Configuración por variables de entorno que el stack llena: `ORIGINATION_PHONE_NUMBER_ID` (desde SSM), `TEMPLATE_NAME`, `TEMPLATE_LANGUAGE` (contexto `hop:templateLanguage`, tiene que coincidir con el idioma con el que se aprobó la plantilla) y `META_API_VERSION` (opcional).
+- Los errores no guardan el número completo: Powertools vuelca las propiedades del error al log.
+
+`src/lib/dynamo.ts` expone los repos tipados de las cuatro tablas. Para los mensajes entrantes: `claimMessage(messageId)` reclama el mensaje con un lease (tabla `hop-hackathon-inbound-messages`, TTL 7 días) y devuelve `false` si ya se procesó o se está procesando; `completeMessage` lo marca `DONE` al terminar. Si la Lambda falla a mitad de camino no se marca nada y el reintento lo retoma cuando vence el lease, así no se pierden respuestas. `touchInbound(phone, inboundAt)` renueva la ventana con la fecha del mensaje y asigna `sessionId`.
 
 Prueba manual (el número va por argumento, nunca al repo):
 

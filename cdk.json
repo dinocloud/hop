@@ -10,6 +10,7 @@
     "hop:stage": "dev",
     "hop:githubRepo": "dinocloud/hop",
     "hop:templateName": "paquete_listo",
+    "hop:templateLanguage": "es_AR",
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
     "@aws-cdk/core:checkSecretUsage": true,
     "@aws-cdk/aws-iam:minimizePolicies": true,

@@ -22,6 +22,8 @@ export interface HopStackProps extends cdk.StackProps {
   readonly stage: string;
   /** Nombre de la plantilla de WhatsApp aprobada en Meta. */
   readonly templateName: string;
+  /** Código de idioma con el que se aprobó la plantilla (ej. `es_AR`). */
+  readonly templateLanguage: string;
 }
 
 /** Prefijo de todos los recursos: la cuenta es compartida con otros proyectos. */
@@ -47,13 +49,14 @@ export class HopStack extends cdk.Stack {
   readonly packagesTable: dynamodb.Table;
   readonly hopPointsTable: dynamodb.Table;
   readonly conversationsTable: dynamodb.Table;
+  readonly inboundMessagesTable: dynamodb.Table;
   readonly packageStatusHookFn: NodejsFunction;
   readonly inboundRouterFn: NodejsFunction;
   readonly api: apigw.RestApi;
 
   constructor(scope: Construct, id: string, props: HopStackProps) {
     super(scope, id, props);
-    const { stage, templateName } = props;
+    const { stage, templateName, templateLanguage } = props;
 
     // ----------------------------------------------------------------------
     // Configuración externa (setup de WhatsApp). Se resuelve en deploy desde SSM.
@@ -111,6 +114,15 @@ export class HopStack extends cdk.Stack {
       partitionKey: { name: 'phone', type: dynamodb.AttributeType.STRING },
     });
 
+    // Un ítem por mensaje entrante: procesar cada uno exactamente una vez aunque SNS/Lambda
+    // reintenten. Se limpia solo por TTL.
+    this.inboundMessagesTable = new dynamodb.Table(this, 'InboundMessagesTable', {
+      ...tableDefaults,
+      tableName: `${PREFIX}-inbound-messages`,
+      partitionKey: { name: 'messageId', type: dynamodb.AttributeType.STRING },
+      timeToLiveAttribute: 'expiresAt',
+    });
+
     // ----------------------------------------------------------------------
     // Lambdas
     // ----------------------------------------------------------------------
@@ -119,8 +131,10 @@ export class HopStack extends cdk.Stack {
       [ENV.PACKAGES_TABLE]: this.packagesTable.tableName,
       [ENV.HOP_POINTS_TABLE]: this.hopPointsTable.tableName,
       [ENV.CONVERSATIONS_TABLE]: this.conversationsTable.tableName,
+      [ENV.INBOUND_MESSAGES_TABLE]: this.inboundMessagesTable.tableName,
       [ENV.ORIGINATION_PHONE_NUMBER_ID]: originationPhoneNumberId,
       [ENV.TEMPLATE_NAME]: templateName,
+      [ENV.TEMPLATE_LANGUAGE]: templateLanguage,
       POWERTOOLS_LOG_LEVEL: 'INFO',
       NODE_OPTIONS: '--enable-source-maps',
     };
@@ -193,8 +207,9 @@ export class HopStack extends cdk.Stack {
     // Hook: lee y actualiza paquetes, lee el Punto HOP para el nombre de la plantilla.
     this.packagesTable.grant(this.packageStatusHookFn, 'dynamodb:GetItem', 'dynamodb:UpdateItem');
     this.hopPointsTable.grant(this.packageStatusHookFn, 'dynamodb:GetItem');
-    // Router: solo la conversación (ventana de 24 h, sessionId, dedupe). Los paquetes los lee el agente.
+    // Router: la conversación (ventana de 24 h, sessionId) y el dedupe por mensaje. Los paquetes los lee el agente.
     this.conversationsTable.grant(this.inboundRouterFn, 'dynamodb:GetItem', 'dynamodb:UpdateItem');
+    this.inboundMessagesTable.grant(this.inboundRouterFn, 'dynamodb:UpdateItem');
 
     for (const fn of [this.packageStatusHookFn, this.inboundRouterFn]) {
       fn.addToRolePolicy(
@@ -369,6 +384,7 @@ export class HopStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'PackagesTableName', { value: this.packagesTable.tableName });
     new cdk.CfnOutput(this, 'HopPointsTableName', { value: this.hopPointsTable.tableName });
     new cdk.CfnOutput(this, 'ConversationsTableName', { value: this.conversationsTable.tableName });
+    new cdk.CfnOutput(this, 'InboundMessagesTableName', { value: this.inboundMessagesTable.tableName });
     new cdk.CfnOutput(this, 'InboundDlqUrl', { value: inboundDlq.queueUrl });
   }
 }

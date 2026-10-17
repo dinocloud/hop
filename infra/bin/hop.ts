@@ -13,6 +13,7 @@ const region = requireContext('hop:region');
 const stage = requireContext('hop:stage');
 const githubRepo = requireContext('hop:githubRepo');
 const templateName = requireContext('hop:templateName');
+const templateLanguage = requireContext('hop:templateLanguage');
 
 const env: cdk.Environment = { account, region };
 
@@ -34,6 +35,7 @@ new HopStack(app, 'HopHackathonDev', {
   description: 'HOP hackathon - WhatsApp (End User Messaging Social) + AgentCore',
   stage,
   templateName,
+  templateLanguage,
 });
 
 // Tags para identificar todo lo del proyecto en una cuenta compartida.

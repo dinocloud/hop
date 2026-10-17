@@ -6,20 +6,24 @@
  *   AWS_PROFILE=dino-dev npm run send:test -- +5491112345678 template paquete_listo "Ana" "Punto HOP Palermo" "5"
  *   AWS_PROFILE=dino-dev npm run send:test -- +5491112345678 location
  *
- * El ID del número se lee de SSM (`/hop-hackathon/dev/whatsapp/aws-phone-number-id`) si no
- * está en `PHONE_NUMBER_ID`. Texto y ubicación exigen que ese teléfono haya escrito al número
- * en las últimas 24 h (se lee la tabla de conversaciones).
+ * Configuración (todas opcionales, mismos nombres que las Lambdas):
+ *   STAGE (default dev), PACKAGES_TABLE, HOP_POINTS_TABLE, CONVERSATIONS_TABLE, INBOUND_MESSAGES_TABLE,
+ *   ORIGINATION_PHONE_NUMBER_ID (si falta se lee de SSM `/hop-hackathon/<stage>/whatsapp/aws-phone-number-id`),
+ *   TEMPLATE_LANGUAGE, META_API_VERSION.
+ * Texto y ubicación exigen que ese teléfono haya escrito al número en las últimas 24 h
+ * (se lee la tabla de conversaciones).
  */
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import { createRepos } from '../src/lib/dynamo.js';
 import { createWhatsAppSender } from '../src/lib/whatsapp.js';
 
 const PREFIX = 'hop-hackathon';
+const STAGE = process.env.STAGE ?? 'dev';
 
-async function resolvePhoneNumberId(): Promise<string> {
-  if (process.env.PHONE_NUMBER_ID) return process.env.PHONE_NUMBER_ID;
+async function resolveOriginationPhoneNumberId(): Promise<string> {
+  if (process.env.ORIGINATION_PHONE_NUMBER_ID) return process.env.ORIGINATION_PHONE_NUMBER_ID;
   const ssm = new SSMClient({});
-  const res = await ssm.send(new GetParameterCommand({ Name: `/${PREFIX}/dev/whatsapp/aws-phone-number-id` }));
+  const res = await ssm.send(new GetParameterCommand({ Name: `/${PREFIX}/${STAGE}/whatsapp/aws-phone-number-id` }));
   if (!res.Parameter?.Value) throw new Error('No se pudo leer aws-phone-number-id de SSM');
   return res.Parameter.Value;
 }
@@ -33,13 +37,14 @@ async function main(): Promise<void> {
 
   const repos = createRepos({
     tables: {
-      packages: `${PREFIX}-packages`,
-      hopPoints: `${PREFIX}-hop-points`,
-      conversations: `${PREFIX}-conversations`,
+      packages: process.env.PACKAGES_TABLE ?? `${PREFIX}-packages`,
+      hopPoints: process.env.HOP_POINTS_TABLE ?? `${PREFIX}-hop-points`,
+      conversations: process.env.CONVERSATIONS_TABLE ?? `${PREFIX}-conversations`,
+      inboundMessages: process.env.INBOUND_MESSAGES_TABLE ?? `${PREFIX}-inbound-messages`,
     },
   });
   const sender = createWhatsAppSender({
-    phoneNumberId: await resolvePhoneNumberId(),
+    originationPhoneNumberId: await resolveOriginationPhoneNumberId(),
     getConversation: repos.getConversation,
   });
 

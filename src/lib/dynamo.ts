@@ -7,13 +7,15 @@ import {
   type UpdateCommandInput,
 } from '@aws-sdk/lib-dynamodb';
 import { randomUUID } from 'node:crypto';
-import type { Conversation, HopPoint, Package, PackageStatus } from './types.js';
+import { normalizePhone } from './phone.js';
+import type { Conversation, HopPoint, InboundMessage, Package, PackageStatus } from './types.js';
 import { requireEnv } from './types.js';
 
 export interface TableNames {
   packages: string;
   hopPoints: string;
   conversations: string;
+  inboundMessages: string;
 }
 
 export interface ReposDeps {
@@ -28,11 +30,10 @@ export interface PackageStatusPatch {
   scheduledAt?: string;
 }
 
-export interface TouchInboundResult {
-  /** `true` si ese `messageId` ya había sido procesado (reintento de SNS/Lambda). */
-  duplicate: boolean;
-  conversation?: Conversation;
-}
+/** Lease de procesamiento de un mensaje entrante. Más largo que el timeout de la Lambda (60 s). */
+export const MESSAGE_LEASE_SECONDS = 120;
+/** Los ítems de dedupe se borran solos a los 7 días. */
+export const MESSAGE_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 export class PackageNotFoundError extends Error {
   constructor(readonly trackingId: string) {
@@ -46,6 +47,7 @@ export function tableNamesFromEnv(): TableNames {
     packages: requireEnv('PACKAGES_TABLE'),
     hopPoints: requireEnv('HOP_POINTS_TABLE'),
     conversations: requireEnv('CONVERSATIONS_TABLE'),
+    inboundMessages: requireEnv('INBOUND_MESSAGES_TABLE'),
   };
 }
 
@@ -56,8 +58,9 @@ export function createDocumentClient(): DynamoDBDocumentClient {
 }
 
 /**
- * Acceso tipado a las tres tablas. Cada Lambda crea una instancia fuera del handler
+ * Acceso tipado a las tablas. Cada Lambda crea una instancia fuera del handler
  * (reutiliza la conexión entre invocaciones) e inyecta mocks en los tests.
+ * Todo teléfono que entra se normaliza a E.164 con `+`, así las claves son únicas.
  */
 export function createRepos(deps: ReposDeps = {}) {
   const doc = deps.doc ?? createDocumentClient();
@@ -69,7 +72,8 @@ export function createRepos(deps: ReposDeps = {}) {
   }
 
   /** Paquetes de un teléfono, el más reciente primero. */
-  async function getPackagesByPhone(phone: string, limit = 5): Promise<Package[]> {
+  async function getPackagesByPhone(rawPhone: string, limit = 5): Promise<Package[]> {
+    const phone = normalizePhone(rawPhone);
     const res = await doc.send(
       new QueryCommand({
         TableName: tables.packages,
@@ -93,12 +97,13 @@ export function createRepos(deps: ReposDeps = {}) {
 
     for (const field of ['hopPointId', 'deadlineAt', 'scheduledAt'] as const) {
       const value = patch[field];
-      names[`#${field}`] = field;
       if (value !== undefined) {
+        names[`#${field}`] = field;
         sets.push(`#${field} = :${field}`);
         values[`:${field}`] = value;
       } else if (field !== 'hopPointId') {
-        // Un cambio de estado invalida plazos y reprogramaciones anteriores.
+        // Un cambio de estado invalida plazos y reprogramaciones anteriores. El Punto HOP se conserva.
+        names[`#${field}`] = field;
         removes.push(`#${field}`);
       }
     }
@@ -127,45 +132,94 @@ export function createRepos(deps: ReposDeps = {}) {
     return res.Item as HopPoint | undefined;
   }
 
-  async function getConversation(phone: string): Promise<Conversation | undefined> {
-    const res = await doc.send(new GetCommand({ TableName: tables.conversations, Key: { phone } }));
+  /** Lectura fuertemente consistente: se consulta justo después de `touchInbound`. */
+  async function getConversation(rawPhone: string): Promise<Conversation | undefined> {
+    const phone = normalizePhone(rawPhone);
+    const res = await doc.send(new GetCommand({ TableName: tables.conversations, Key: { phone }, ConsistentRead: true }));
     return res.Item as Conversation | undefined;
   }
 
   /**
-   * Registra un mensaje entrante: abre/renueva la ventana de 24 h, asigna `sessionId`
-   * si no existía y deduplica por `messageId` (reintentos de SNS → Lambda).
+   * Registra un mensaje entrante: renueva la ventana de 24 h con la fecha del mensaje y asigna
+   * `sessionId` si no existía. Devuelve la conversación resultante.
    */
-  async function touchInbound(phone: string, messageId: string, now = new Date()): Promise<TouchInboundResult> {
+  async function touchInbound(rawPhone: string, inboundAt: Date): Promise<Conversation> {
+    const phone = normalizePhone(rawPhone);
+    const res = await doc.send(
+      new UpdateCommand({
+        TableName: tables.conversations,
+        Key: { phone },
+        UpdateExpression: 'SET #lastInboundAt = :inboundAt, #sessionId = if_not_exists(#sessionId, :sessionId)',
+        ExpressionAttributeNames: { '#lastInboundAt': 'lastInboundAt', '#sessionId': 'sessionId' },
+        ExpressionAttributeValues: { ':inboundAt': inboundAt.toISOString(), ':sessionId': newSessionId() },
+        ReturnValues: 'ALL_NEW',
+      }),
+    );
+    return res.Attributes as Conversation;
+  }
+
+  /**
+   * Reclama un mensaje entrante para procesarlo exactamente una vez.
+   * - `true`: nadie lo procesó, o un intento anterior quedó en PROCESSING con el lease vencido
+   *   (la Lambda falló a mitad de camino): hay que procesarlo.
+   * - `false`: ya está DONE o lo está procesando otra invocación ahora mismo: descartar.
+   * Siempre terminar con `completeMessage` si salió bien; si falla, no marcar nada y dejar
+   * que el reintento lo retome cuando venza el lease.
+   */
+  async function claimMessage(messageId: string, now = new Date()): Promise<boolean> {
+    const nowSec = Math.floor(now.getTime() / 1000);
     try {
-      const res = await doc.send(
+      await doc.send(
         new UpdateCommand({
-          TableName: tables.conversations,
-          Key: { phone },
-          UpdateExpression:
-            'SET #lastInboundAt = :now, #lastMessageId = :messageId, #sessionId = if_not_exists(#sessionId, :sessionId)',
-          ConditionExpression: 'attribute_not_exists(#lastMessageId) OR #lastMessageId <> :messageId',
+          TableName: tables.inboundMessages,
+          Key: { messageId },
+          UpdateExpression: 'SET #status = :processing, #leaseUntil = :leaseUntil, #expiresAt = :expiresAt, #updatedAt = :updatedAt',
+          ConditionExpression: 'attribute_not_exists(messageId) OR (#status = :processing AND #leaseUntil < :now)',
           ExpressionAttributeNames: {
-            '#lastInboundAt': 'lastInboundAt',
-            '#lastMessageId': 'lastMessageId',
-            '#sessionId': 'sessionId',
+            '#status': 'status',
+            '#leaseUntil': 'leaseUntil',
+            '#expiresAt': 'expiresAt',
+            '#updatedAt': 'updatedAt',
           },
           ExpressionAttributeValues: {
-            ':now': now.toISOString(),
-            ':messageId': messageId,
-            ':sessionId': newSessionId(),
+            ':processing': 'PROCESSING' satisfies InboundMessage['status'],
+            ':leaseUntil': nowSec + MESSAGE_LEASE_SECONDS,
+            ':expiresAt': nowSec + MESSAGE_TTL_SECONDS,
+            ':updatedAt': now.toISOString(),
+            ':now': nowSec,
           },
-          ReturnValues: 'ALL_NEW',
         }),
       );
-      return { duplicate: false, conversation: res.Attributes as Conversation };
+      return true;
     } catch (err) {
-      if (isConditionalCheckFailed(err)) return { duplicate: true };
+      if (isConditionalCheckFailed(err)) return false;
       throw err;
     }
   }
 
-  return { getPackage, getPackagesByPhone, updatePackageStatus, getHopPoint, getConversation, touchInbound, tables };
+  async function completeMessage(messageId: string, now = new Date()): Promise<void> {
+    await doc.send(
+      new UpdateCommand({
+        TableName: tables.inboundMessages,
+        Key: { messageId },
+        UpdateExpression: 'SET #status = :done, #updatedAt = :updatedAt',
+        ExpressionAttributeNames: { '#status': 'status', '#updatedAt': 'updatedAt' },
+        ExpressionAttributeValues: { ':done': 'DONE' satisfies InboundMessage['status'], ':updatedAt': now.toISOString() },
+      }),
+    );
+  }
+
+  return {
+    getPackage,
+    getPackagesByPhone,
+    updatePackageStatus,
+    getHopPoint,
+    getConversation,
+    touchInbound,
+    claimMessage,
+    completeMessage,
+    tables,
+  };
 }
 
 export type Repos = ReturnType<typeof createRepos>;

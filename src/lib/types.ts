@@ -40,9 +40,22 @@ export interface Conversation {
   lastInboundAt?: string;
   /** Session id para AgentCore Runtime (>= 33 caracteres). */
   sessionId?: string;
-  /** Último `messageId` de WhatsApp procesado, para deduplicar reintentos. */
-  lastMessageId?: string;
   lastTrackingId?: string;
+}
+
+/**
+ * Tabla `hop-hackathon-inbound-messages`. PK `messageId`. Un ítem por mensaje entrante de
+ * WhatsApp, para procesar cada uno exactamente una vez aunque SNS/Lambda reintenten.
+ * Se borra solo por TTL.
+ */
+export interface InboundMessage {
+  messageId: string;
+  status: 'PROCESSING' | 'DONE';
+  /** Hasta cuándo vale el lease de PROCESSING (epoch segundos). Vencido, un reintento lo retoma. */
+  leaseUntil: number;
+  /** TTL de DynamoDB (epoch segundos). */
+  expiresAt: number;
+  updatedAt: string;
 }
 
 /** Nombres de las variables de entorno que exponen la configuración a las Lambdas. */
@@ -50,9 +63,14 @@ export const ENV = {
   PACKAGES_TABLE: 'PACKAGES_TABLE',
   HOP_POINTS_TABLE: 'HOP_POINTS_TABLE',
   CONVERSATIONS_TABLE: 'CONVERSATIONS_TABLE',
+  INBOUND_MESSAGES_TABLE: 'INBOUND_MESSAGES_TABLE',
   /** ID de AWS del número (`phone-number-id-...`), el `originationPhoneNumberId` de la API. No es el ID de Meta. */
   ORIGINATION_PHONE_NUMBER_ID: 'ORIGINATION_PHONE_NUMBER_ID',
   TEMPLATE_NAME: 'TEMPLATE_NAME',
+  /** Código de idioma con el que se aprobó la plantilla en Meta (ej. `es_AR`). */
+  TEMPLATE_LANGUAGE: 'TEMPLATE_LANGUAGE',
+  /** Versión de la Cloud API de Meta que se pasa a End User Messaging Social. */
+  META_API_VERSION: 'META_API_VERSION',
   AGENT_RUNTIME_ARN: 'AGENT_RUNTIME_ARN',
   STAGE: 'STAGE',
 } as const;
@@ -63,4 +81,8 @@ export function requireEnv(name: keyof typeof ENV): string {
     throw new Error(`Falta la variable de entorno ${ENV[name]}`);
   }
   return value;
+}
+
+export function optionalEnv(name: keyof typeof ENV, fallback: string): string {
+  return process.env[ENV[name]] || fallback;
 }
