@@ -192,13 +192,15 @@ Si el runtime rechazara el entry point `index.js` para `NODE_22`, se ajusta con 
 
 SNS (End User Messaging Social) → `inbound-router` → AgentCore → respuesta por WhatsApp.
 
-- **Evento**: el `Message` de SNS trae `whatsAppWebhookEntry`, el `entry` de la Cloud API de Meta como string JSON. Solo se procesan mensajes de texto; los `statuses` (entregado, leído) y otros tipos (imagen, audio) se ignoran con la métrica `InboundIgnored`. El `from` viene sin `+` y se normaliza con `fromWaId`. Parser en `src/lib/inbound-event.ts`.
-- **Exactamente una vez**: `claimMessage(messageId)` con lease; `completeMessage` al terminar; `releaseMessage` si algo falla, para que el reintento de Lambda lo retome enseguida.
-- **Conversación**: `touchInbound(phone, fechaDelMensaje)` abre la ventana de 24 h y asigna el `sessionId` que se le pasa a AgentCore (así el agente conserva el hilo).
-- **Respuesta**: `sendText` con el texto del agente y, si devolvió `location`, `sendLocation` con el pin del Punto HOP. Si el agente falla, se manda un texto de disculpa (`AgentFailed`). Si el envío falla por una causa transitoria, se relanza para que Lambda reintente (2 reintentos, luego DLQ con alarma); si es permanente, queda en el log y en `ReplyFailed`.
-- **Timeouts**: Lambda 60 s; la invocación del runtime tiene 40 s de timeout propio.
+- **Evento**: el `Message` de SNS trae `whatsAppWebhookEntry`, el `entry` de la Cloud API de Meta como string JSON. Solo se procesan mensajes de texto. Otros tipos (imagen, audio) van a `InboundIgnored`; los `statuses` se cuentan en `InboundStatus` y un `failed` (por ejemplo 131047, fuera de ventana) se loguea con sus códigos y dispara `ReplyDeliveryFailed`. Elementos con forma inesperada van a `InboundInvalid` sin bloquear al resto; un sobre con formato desconocido va a `InboundParseError`. El `from` viene sin `+` y se normaliza con `fromWaId`. Parser tolerante por elemento en `src/lib/inbound-event.ts`.
+- **Exactamente una vez**: `claimMessage(messageId)` con lease de 70 s (más que el timeout de la Lambda). `done` se descarta como duplicado; `in_progress` (una invocación anterior murió con el lease vivo) se relanza para que Lambda lo reintente más tarde en vez de perderlo; `completeMessage` al terminar; `releaseMessage` si falla antes de enviar algo.
+- **Nunca dos respuestas**: una vez que salió algo por WhatsApp, un fallo posterior no relanza (log + `ReplyFailed`). Solo se reintenta si todavía no salió nada, el error es transitorio y no ambiguo (un timeout del envío puede haber llegado igual).
+- **Conversación**: `touchInbound(phone, fechaDelMensaje)` abre la ventana de 24 h (nunca retrocede) y asigna el `sessionId` que se le pasa a AgentCore (así el agente conserva el hilo; el runtime procesa de a un mensaje por sesión). Un mensaje más viejo que la ventana (redrive tardío) no se contesta: `InboundStale`.
+- **Respuesta**: `sendText` con el texto del agente y, si devolvió `location`, `sendLocation` con el pin del Punto HOP. Si el agente falla o responde en modo degradado, se manda el texto de disculpa (`AgentFailed`).
+- **Tiempo**: Lambda 60 s. Cada mensaje recibe como máximo 40 s para el agente, acotado por lo que queda de la Lambda menos 12 s de margen; si quedan menos de 15 s no se arranca otro mensaje y se relanza para el reintento.
+- **Alarmas**: `InboundParseError`, `ReplyFailed`, `ReplyDeliveryFailed` y `AgentFailed` > 0 en 5 minutos, además de la DLQ.
 
-Probar sin teléfono (el número indicado recibe la respuesta real):
+Probar sin teléfono (el número indicado recibe la respuesta real). Requiere `sns:Publish` sobre el topic (y `kms:GenerateDataKey` si el topic estuviera cifrado con una CMK). Ojo: el evento sintético abre la ventana local para ese número; si en Meta nunca escribió, el envío lo acepta AWS pero Meta lo rechaza de forma asíncrona (llega como `status: failed` con 131047 y dispara `ReplyDeliveryFailed`).
 
 ```bash
 AWS_PROFILE=dino-dev npm run publish:inbound -- +5491112345678 "¿dónde está mi paquete?"

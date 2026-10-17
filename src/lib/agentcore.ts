@@ -21,6 +21,11 @@ export interface AgentClientDeps {
   qualifier?: string;
 }
 
+export interface InvokeOptions {
+  /** Tope de esta invocación. Por defecto `AGENT_REQUEST_TIMEOUT_MS`. */
+  timeoutMs?: number;
+}
+
 /** La Lambda inbound tiene 60 s: el agente tiene que responder bien antes. */
 export const AGENT_REQUEST_TIMEOUT_MS = 40_000;
 
@@ -34,8 +39,9 @@ export function createAgentClient(deps: AgentClientDeps = {}) {
   const agentRuntimeArn = deps.agentRuntimeArn ?? requireEnv('AGENT_RUNTIME_ARN');
   const qualifier = deps.qualifier ?? 'DEFAULT';
 
-  async function invoke(request: AgentRequest, sessionId: string): Promise<AgentReply> {
+  async function invoke(request: AgentRequest, sessionId: string, options: InvokeOptions = {}): Promise<AgentReply> {
     if (sessionId.length < 33) throw new AgentInvocationError('sessionId demasiado corto para AgentCore (mínimo 33 caracteres)');
+    const timeoutMs = options.timeoutMs ?? AGENT_REQUEST_TIMEOUT_MS;
     const res = await client.send(
       new InvokeAgentRuntimeCommand({
         agentRuntimeArn,
@@ -45,8 +51,10 @@ export function createAgentClient(deps: AgentClientDeps = {}) {
         accept: 'application/json',
         payload: new TextEncoder().encode(JSON.stringify(request)),
       }),
+      { abortSignal: AbortSignal.timeout(timeoutMs) },
     );
     const raw = (await res.response?.transformToString()) ?? '';
+    // Defensa: el SDK lanza ante un no-2xx, pero si alguna vez resolviera con error se trata igual.
     if (res.statusCode !== undefined && res.statusCode >= 300) {
       throw new AgentInvocationError(`El runtime respondió ${res.statusCode}`, res.statusCode);
     }

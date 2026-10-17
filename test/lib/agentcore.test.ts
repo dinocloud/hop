@@ -19,8 +19,10 @@ describe('createAgentClient', () => {
     agentcore.on(InvokeAgentRuntimeCommand).resolves(response(JSON.stringify({ text: 'Listo en Palermo', location: { lat: -34.5, lng: -58.4, name: 'HOP', address: 'Calle 1' } })) as never);
     const reply = await client.invoke({ phone: '+5491112345678', text: 'hola' }, SESSION);
     expect(reply).toEqual({ text: 'Listo en Palermo', location: { lat: -34.5, lng: -58.4, name: 'HOP', address: 'Calle 1' } });
-    const input = agentcore.commandCalls(InvokeAgentRuntimeCommand)[0]!.args[0].input;
+    const call = agentcore.commandCalls(InvokeAgentRuntimeCommand)[0]!;
+    const input = call.args[0].input;
     expect(input).toMatchObject({ agentRuntimeArn: ARN, qualifier: 'DEFAULT', runtimeSessionId: SESSION, contentType: 'application/json' });
+    expect(((call.args as unknown[])[1] as { abortSignal?: AbortSignal } | undefined)?.abortSignal).toBeInstanceOf(AbortSignal);
     expect(JSON.parse(new TextDecoder().decode(input.payload as Uint8Array))).toEqual({ phone: '+5491112345678', text: 'hola' });
   });
 

@@ -1,11 +1,11 @@
 import { z } from 'zod';
-import { fromWaId } from './phone.js';
+import { InvalidPhoneError, fromWaId } from './phone.js';
 
 /**
  * Parseo del evento que AWS End User Messaging Social publica en SNS por cada webhook de
  * WhatsApp. El `Message` de SNS es un JSON con `whatsAppWebhookEntry`: el `entry` de la
  * Cloud API de Meta serializado como string. Un entry puede traer mensajes (`messages`) o
- * estados de entrega (`statuses`); acá solo interesan los mensajes de texto.
+ * estados de entrega (`statuses`); acá interesan los mensajes de texto y los estados `failed`.
  *
  * Formato observado en la cuenta (statuses y messages comparten la estructura):
  * {
@@ -15,15 +15,27 @@ import { fromWaId } from './phone.js';
  *   "aws_account_id": "...",
  *   "message_timestamp": "2026-10-14T21:16:20Z"
  * }
+ *
+ * El parser es tolerante por elemento: un mensaje o status con forma rara se cuenta como
+ * inválido y no bloquea a los demás del mismo entry.
  */
 
 const WebhookMessageSchema = z
   .object({
     id: z.string().min(1),
-    from: z.string().min(8),
-    timestamp: z.string().regex(/^\d+$/),
+    from: z.string().min(1),
+    timestamp: z.coerce.number().int().positive(),
     type: z.string(),
     text: z.object({ body: z.string() }).optional(),
+  })
+  .passthrough();
+
+const WebhookStatusSchema = z
+  .object({
+    id: z.string().min(1),
+    status: z.string(),
+    recipient_id: z.string().optional(),
+    errors: z.array(z.object({ code: z.coerce.number().optional(), title: z.string().optional() }).passthrough()).optional(),
   })
   .passthrough();
 
@@ -37,7 +49,7 @@ const WebhookEntrySchema = z
             field: z.string().optional(),
             value: z
               .object({
-                messages: z.array(WebhookMessageSchema).optional(),
+                messages: z.array(z.unknown()).optional(),
                 statuses: z.array(z.unknown()).optional(),
               })
               .passthrough(),
@@ -66,11 +78,21 @@ export interface InboundTextMessage {
   sentAt: Date;
 }
 
+export interface InboundStatus {
+  /** `id` del mensaje saliente al que refiere. */
+  messageId: string;
+  status: string;
+  /** Códigos de error de Meta cuando `status === 'failed'` (ej. 131047 re-engagement). */
+  errorCodes: number[];
+}
+
 export interface ParsedInboundEvent {
   textMessages: InboundTextMessage[];
   /** Mensajes de otro tipo (imagen, audio, botón...) que no se procesan. */
   otherMessages: number;
-  statuses: number;
+  /** Mensajes o statuses con forma inesperada o teléfono inválido. */
+  invalidItems: number;
+  statuses: InboundStatus[];
 }
 
 export class InboundEventError extends Error {
@@ -80,7 +102,7 @@ export class InboundEventError extends Error {
   }
 }
 
-/** Parsea el `Message` de un registro SNS. Lanza `InboundEventError` si no tiene el formato esperado. */
+/** Parsea el `Message` de un registro SNS. Lanza `InboundEventError` si el sobre no tiene el formato esperado. */
 export function parseInboundEvent(snsMessage: string): ParsedInboundEvent {
   let outer: unknown;
   try {
@@ -102,20 +124,46 @@ export function parseInboundEvent(snsMessage: string): ParsedInboundEvent {
   const entry = WebhookEntrySchema.safeParse(entryRaw);
   if (!entry.success) throw new InboundEventError('whatsAppWebhookEntry no tiene el formato de la Cloud API');
 
-  const result: ParsedInboundEvent = { textMessages: [], otherMessages: 0, statuses: 0 };
+  const result: ParsedInboundEvent = { textMessages: [], otherMessages: 0, invalidItems: 0, statuses: [] };
   for (const change of entry.data.changes) {
-    result.statuses += change.value.statuses?.length ?? 0;
-    for (const message of change.value.messages ?? []) {
-      const body = message.text?.body?.trim();
-      if (message.type !== 'text' || !body) {
+    for (const rawStatus of change.value.statuses ?? []) {
+      const status = WebhookStatusSchema.safeParse(rawStatus);
+      if (!status.success) {
+        result.invalidItems += 1;
+        continue;
+      }
+      result.statuses.push({
+        messageId: status.data.id,
+        status: status.data.status,
+        errorCodes: (status.data.errors ?? []).map((e) => e.code).filter((c): c is number => typeof c === 'number'),
+      });
+    }
+    for (const rawMessage of change.value.messages ?? []) {
+      const message = WebhookMessageSchema.safeParse(rawMessage);
+      if (!message.success) {
+        result.invalidItems += 1;
+        continue;
+      }
+      const body = message.data.text?.body?.trim();
+      if (message.data.type !== 'text' || !body) {
         result.otherMessages += 1;
         continue;
       }
+      let from: string;
+      try {
+        from = fromWaId(message.data.from);
+      } catch (err) {
+        if (err instanceof InvalidPhoneError) {
+          result.invalidItems += 1;
+          continue;
+        }
+        throw err;
+      }
       result.textMessages.push({
-        messageId: message.id,
-        from: fromWaId(message.from),
+        messageId: message.data.id,
+        from,
         text: body,
-        sentAt: new Date(Number(message.timestamp) * 1000),
+        sentAt: new Date(message.data.timestamp * 1000),
       });
     }
   }
