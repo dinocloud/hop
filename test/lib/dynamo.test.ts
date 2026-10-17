@@ -152,6 +152,17 @@ describe('repos', () => {
     expect(await repos.claimMessage('wamid.A', NOW)).toBe(false);
   });
 
+  it('releaseMessage vence el lease solo si sigue en PROCESSING', async () => {
+    ddb.on(UpdateCommand).resolves({});
+    await repos.releaseMessage('wamid.A', NOW);
+    const input = ddb.commandCalls(UpdateCommand)[0]!.args[0].input;
+    expect(input.ConditionExpression).toBe('#status = :processing');
+    expect(input.ExpressionAttributeValues?.[':zero']).toBe(0);
+    expectExpressionsConsistent(input);
+    ddb.on(UpdateCommand).rejects(conditionalCheckFailed());
+    await expect(repos.releaseMessage('wamid.A', NOW)).resolves.toBeUndefined();
+  });
+
   it('completeMessage marca DONE', async () => {
     ddb.on(UpdateCommand).resolves({});
     await repos.completeMessage('wamid.A', NOW);

@@ -188,6 +188,23 @@ aws bedrock-agentcore invoke-agent-runtime --region us-east-1 \
 
 Si el runtime rechazara el entry point `index.js` para `NODE_22`, se ajusta con la prop `agentEntryPoint` del stack; el servidor cumple el contrato HTTP en el puerto 8080, que es el fallback seguro.
 
+## Mensajes entrantes (`src/lambdas/inbound-router`)
+
+SNS (End User Messaging Social) → `inbound-router` → AgentCore → respuesta por WhatsApp.
+
+- **Evento**: el `Message` de SNS trae `whatsAppWebhookEntry`, el `entry` de la Cloud API de Meta como string JSON. Solo se procesan mensajes de texto; los `statuses` (entregado, leído) y otros tipos (imagen, audio) se ignoran con la métrica `InboundIgnored`. El `from` viene sin `+` y se normaliza con `fromWaId`. Parser en `src/lib/inbound-event.ts`.
+- **Exactamente una vez**: `claimMessage(messageId)` con lease; `completeMessage` al terminar; `releaseMessage` si algo falla, para que el reintento de Lambda lo retome enseguida.
+- **Conversación**: `touchInbound(phone, fechaDelMensaje)` abre la ventana de 24 h y asigna el `sessionId` que se le pasa a AgentCore (así el agente conserva el hilo).
+- **Respuesta**: `sendText` con el texto del agente y, si devolvió `location`, `sendLocation` con el pin del Punto HOP. Si el agente falla, se manda un texto de disculpa (`AgentFailed`). Si el envío falla por una causa transitoria, se relanza para que Lambda reintente (2 reintentos, luego DLQ con alarma); si es permanente, queda en el log y en `ReplyFailed`.
+- **Timeouts**: Lambda 60 s; la invocación del runtime tiene 40 s de timeout propio.
+
+Probar sin teléfono (el número indicado recibe la respuesta real):
+
+```bash
+AWS_PROFILE=dino-dev npm run publish:inbound -- +5491112345678 "¿dónde está mi paquete?"
+aws logs tail /aws/lambda/hop-hackathon-inbound-router --since 5m --follow
+```
+
 ## Datos de prueba
 
 ```bash

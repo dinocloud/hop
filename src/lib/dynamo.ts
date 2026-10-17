@@ -277,6 +277,29 @@ export function createRepos(deps: ReposDeps = {}) {
     }
   }
 
+  /** Libera el lease de un mensaje que falló a mitad de camino, para que el reintento lo retome enseguida. */
+  async function releaseMessage(messageId: string, now = new Date()): Promise<void> {
+    try {
+      await doc.send(
+        new UpdateCommand({
+          TableName: tables.inboundMessages,
+          Key: { messageId },
+          UpdateExpression: 'SET #leaseUntil = :zero, #updatedAt = :updatedAt',
+          ConditionExpression: '#status = :processing',
+          ExpressionAttributeNames: { '#leaseUntil': 'leaseUntil', '#updatedAt': 'updatedAt', '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':zero': 0,
+            ':updatedAt': now.toISOString(),
+            ':processing': 'PROCESSING' satisfies InboundMessage['status'],
+          },
+        }),
+      );
+    } catch (err) {
+      if (isConditionalCheckFailed(err)) return; // ya está DONE: nada que liberar
+      throw err;
+    }
+  }
+
   async function completeMessage(messageId: string, now = new Date()): Promise<void> {
     await doc.send(
       new UpdateCommand({
@@ -298,6 +321,7 @@ export function createRepos(deps: ReposDeps = {}) {
     getConversation,
     touchInbound,
     claimMessage,
+    releaseMessage,
     completeMessage,
     tables,
   };
