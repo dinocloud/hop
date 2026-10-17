@@ -153,6 +153,39 @@ Garantías:
 - Si el envío falla de forma permanente (por ejemplo la plantilla todavía no está aprobada en Meta) responde `202` con `notified: false`, registra `FAILED` y emite la métrica `HopHackathon/TemplateSendFailed`, que tiene alarma (`hop-hackathon-template-send-failed`).
 - La Lambda tiene timeout de 20 s y los clientes del SDK 5 s por request, siempre por debajo de los 29 s de API Gateway.
 
+## Agente en AgentCore Runtime (`agent/`)
+
+El agente de seguimiento para el cliente final corre en **Amazon Bedrock AgentCore Runtime** con **deploy de código directo** (runtime `NODE_22`): el bundle de `agent/src` se sube a S3 como asset y el runtime lo carga, sin contenedor ni Docker. Está escrito con `@strands-agents/sdk` (TypeScript) y el servidor del runtime lo da `bedrock-agentcore/runtime` (`/invocations`, `/ping`, sesión).
+
+- **Contrato**: request `{ phone, text }`, response `{ text, location | null }`. Si viene `location`, la Lambda inbound manda además el pin de WhatsApp. La respuesta se pide como salida estructurada (zod); si el modelo no la cumple, se cae a texto plano sin ubicación.
+- **Tools** (`agent/src/tools.ts`): `get_my_packages` (usa el teléfono de la sesión, nunca uno que diga el usuario), `get_package_by_tracking` (solo si el paquete es del cliente) y `get_hop_point`. Las tools no devuelven teléfonos ni datos internos.
+- **Sesión**: AgentCore aísla cada `sessionId` en su propia instancia; un agente en memoria por sesión conserva el hilo. La Lambda inbound usa el `sessionId` de la conversación.
+- **Modelo**: contexto `hop:agentModelId` (`us.anthropic.claude-sonnet-5-5`), `maxTokens` explícito. El rol del runtime solo puede invocar ese perfil de inferencia y los foundation models de Claude a los que enruta.
+- **Rol del runtime**: trust a `bedrock-agentcore.amazonaws.com` condicionado a esta cuenta y región, lectura de `Packages`/`HopPoints`, lectura del asset, logs del runtime, X-Ray y métricas del namespace `bedrock-agentcore`. Red `PUBLIC` solo por ser dev. Sin authorizer: el único caller es la Lambda, por SigV4.
+- El ARN del runtime queda en el output `AgentRuntimeArn` y en SSM `/hop-hackathon/dev/app/agent-runtime-arn`.
+
+Local:
+
+```bash
+npm run build:agent                       # agent/dist/index.js (CommonJS, ~2.5 MB)
+cd agent/dist && PACKAGES_TABLE=x HOP_POINTS_TABLE=x CONVERSATIONS_TABLE=x INBOUND_MESSAGES_TABLE=x AWS_REGION=us-east-1 node index.js
+curl -s localhost:8080/ping
+curl -s -X POST localhost:8080/invocations -H 'content-type: application/json' \
+  -H 'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id: 0123456789abcdef0123456789abcdef0123' \
+  -d '{"phone":"+5491112345678","text":"¿dónde está mi paquete?"}'
+```
+
+Después del deploy:
+
+```bash
+aws bedrock-agentcore invoke-agent-runtime --region us-east-1 \
+  --agent-runtime-arn "$(aws ssm get-parameter --name /hop-hackathon/dev/app/agent-runtime-arn --query Parameter.Value --output text)" \
+  --runtime-session-id "$(uuidgen)" \
+  --payload "$(echo -n '{"phone":"+549...","text":"¿dónde está mi paquete?"}' | base64)" /dev/stdout
+```
+
+Si el runtime rechazara el entry point `index.js` para `NODE_22`, se ajusta con la prop `agentEntryPoint` del stack; el servidor cumple el contrato HTTP en el puerto 8080, que es el fallback seguro.
+
 ## Datos de prueba
 
 ```bash

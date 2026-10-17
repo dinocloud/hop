@@ -11,6 +11,7 @@
     "hop:githubRepo": "dinocloud/hop",
     "hop:templateName": "paquete_listo",
     "hop:templateLanguage": "es_AR",
+    "hop:agentModelId": "us.anthropic.claude-sonnet-5-5",
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
     "@aws-cdk/core:checkSecretUsage": true,
     "@aws-cdk/aws-iam:minimizePolicies": true,

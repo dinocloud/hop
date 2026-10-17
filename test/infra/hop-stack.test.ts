@@ -1,7 +1,17 @@
 import * as cdk from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { HopStack } from '../../infra/lib/hop-stack.js';
+
+/** Bundle del agente de mentira: el test de infra no necesita compilarlo. */
+function fakeAgentDist(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'hop-agent-dist-'));
+  writeFileSync(join(dir, 'index.js'), '// fake agent bundle\n');
+  return dir;
+}
 
 interface Statement {
   Sid?: string;
@@ -21,6 +31,8 @@ function synth(): Template {
     stage: 'dev',
     templateName: 'paquete_listo',
     templateLanguage: 'es_AR',
+    agentModelId: 'us.anthropic.claude-sonnet-5-5',
+    agentCodePath: fakeAgentDist(),
   });
   return Template.fromStack(stack);
 }
@@ -117,13 +129,70 @@ describe('HopStack', () => {
     });
   });
 
-  it('ningún statement usa Resource "*" salvo el de X-Ray', () => {
+  it('ningún statement usa Resource "*" salvo X-Ray y PutMetricData acotado por namespace', () => {
     const wildcard = allStatements(template).filter((s) => s.Resource === '*');
     expect(wildcard.length).toBeGreaterThan(0);
     for (const s of wildcard) {
       const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
-      expect(actions.every((a) => a.startsWith('xray:'))).toBe(true);
+      const onlyXray = actions.every((a) => a.startsWith('xray:'));
+      const metricsWithNamespace =
+        actions.every((a) => a === 'cloudwatch:PutMetricData') &&
+        JSON.stringify((s as { Condition?: unknown }).Condition ?? {}).includes('cloudwatch:namespace');
+      expect(onlyXray || metricsWithNamespace, `statement con * no justificado: ${JSON.stringify(s)}`).toBe(true);
     }
+  });
+
+  it('despliega el agente en AgentCore Runtime desde código en S3 (Node 22, HTTP, sin contenedor)', () => {
+    template.resourceCountIs('AWS::BedrockAgentCore::Runtime', 1);
+    template.hasResourceProperties('AWS::BedrockAgentCore::Runtime', {
+      AgentRuntimeName: 'hop_hackathon_agent',
+      ProtocolConfiguration: 'HTTP',
+      NetworkConfiguration: { NetworkMode: 'PUBLIC' },
+      AgentRuntimeArtifact: {
+        CodeConfiguration: {
+          Runtime: 'NODE_22',
+          EntryPoint: ['index.js'],
+          Code: { S3: { Bucket: Match.anyValue(), Prefix: Match.stringLikeRegexp('\\.zip$') } },
+        },
+      },
+      EnvironmentVariables: Match.objectLike({ MODEL_ID: 'us.anthropic.claude-sonnet-5-5', PACKAGES_TABLE: Match.anyValue() }),
+    });
+  });
+
+  it('el rol del runtime tiene trust condicionado y acceso de solo lectura a las tablas que usa', () => {
+    template.hasResourceProperties('AWS::IAM::Role', {
+      RoleName: 'hop-hackathon-agent-runtime-role',
+      AssumeRolePolicyDocument: {
+        Statement: [
+          Match.objectLike({
+            Principal: { Service: 'bedrock-agentcore.amazonaws.com' },
+            Condition: {
+              StringEquals: { 'aws:SourceAccount': '123456789012' },
+              ArnLike: { 'aws:SourceArn': 'arn:aws:bedrock-agentcore:us-east-1:123456789012:*' },
+            },
+          }),
+        ],
+      },
+    });
+    const claude = allStatements(template).find((s) => s.Sid === 'InvokeClaude');
+    expect(claude?.Action).toEqual(['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream']);
+    expect(JSON.stringify(claude?.Resource)).toContain('inference-profile/us.anthropic.claude-sonnet-5-5');
+    const agentDynamo = allStatements(template).filter(
+      (s) => JSON.stringify(s.Resource).includes('PackagesTable') && Array.isArray(s.Action) && s.Action.includes('dynamodb:Query'),
+    );
+    expect(agentDynamo).toHaveLength(1);
+    expect(agentDynamo[0]?.Action).toEqual(['dynamodb:GetItem', 'dynamodb:Query']);
+  });
+
+  it('la Lambda inbound puede invocar solo este runtime y recibe su ARN por env', () => {
+    const invoke = allStatements(template).find((s) => s.Sid === 'InvokeAgent');
+    expect(invoke?.Action).toEqual('bedrock-agentcore:InvokeAgentRuntime');
+    expect(JSON.stringify(invoke?.Resource)).toContain('AgentRuntimeArn');
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      FunctionName: 'hop-hackathon-inbound-router',
+      Environment: { Variables: Match.objectLike({ AGENT_RUNTIME_ARN: Match.objectLike({ 'Fn::GetAtt': Match.arrayWith(['AgentRuntimeArn']) }) }) },
+    });
+    template.hasResourceProperties('AWS::SSM::Parameter', { Name: '/hop-hackathon/dev/app/agent-runtime-arn' });
   });
 
   it('acota DynamoDB por acción: el hook actualiza paquetes y el router solo toca conversaciones', () => {
