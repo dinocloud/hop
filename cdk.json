@@ -1,0 +1,24 @@
+{
+  "app": "npx tsx infra/bin/hop.ts",
+  "watch": {
+    "include": ["infra/**", "src/**", "agent/src/**"],
+    "exclude": ["README.md", "cdk*.json", "**/*.test.ts", "node_modules", "cdk.out"]
+  },
+  "context": {
+    "hop:account": "359328299440",
+    "hop:region": "us-east-1",
+    "hop:stage": "dev",
+    "hop:githubRepo": "dinocloud/hop",
+    "hop:templateName": "paquete_listo",
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:enablePartitionLiterals": true,
+    "@aws-cdk/aws-apigateway:disableCloudWatchRole": false,
+    "@aws-cdk/aws-lambda-nodejs:useLatestRuntimeVersion": true,
+    "@aws-cdk/aws-iam:standardizedServicePrincipals": true,
+    "@aws-cdk/aws-sns-subscriptions:restrictSqsDescryption": true,
+    "@aws-cdk/aws-apigateway:requestValidatorUniqueId": true,
+    "@aws-cdk/core:newStyleStackSynthesis": true
+  }
+}

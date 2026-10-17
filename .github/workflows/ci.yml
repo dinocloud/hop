@@ -1,0 +1,52 @@
+name: CI
+
+# Validación en todas las ramas y PRs: tipos, tests, synth con cdk-nag.
+# No necesita credenciales AWS: el synth es determinístico (cuenta/región por contexto,
+# valores de SSM resueltos recién en deploy).
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Synth (cdk-nag)
+        run: npm run synth
+
+      - name: Upload cdk.out
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdk-out-${{ github.sha }}
+          path: cdk.out
+          retention-days: 7
+          if-no-files-found: error

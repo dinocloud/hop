@@ -1,0 +1,65 @@
+name: Deploy
+
+# Despliega HopHackathonDev al mergear a main (o a mano con workflow_dispatch).
+# Credenciales por OIDC: el rol `hop-hackathon-github-deploy` (stack HopHackathonCi)
+# solo puede asumir los roles de bootstrap de CDK. Variable requerida en GitHub:
+#   AWS_DEPLOY_ROLE_ARN  (Settings > Secrets and variables > Actions > Variables)
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+# Nunca dos deploys a la vez sobre el mismo stack.
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  deploy:
+    name: Deploy HopHackathonDev
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: dev
+    env:
+      AWS_REGION: us-east-1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: hop-hackathon-deploy-${{ github.run_id }}
+
+      # El diff queda en el log del run para auditoría.
+      - name: Diff
+        run: npx cdk diff HopHackathonDev --exclusively
+
+      - name: Deploy
+        run: npx cdk deploy HopHackathonDev --exclusively --require-approval never --outputs-file cdk-outputs.json
+
+      - name: Outputs
+        if: always()
+        run: test -f cdk-outputs.json && cat cdk-outputs.json || true
