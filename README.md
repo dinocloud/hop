@@ -91,6 +91,26 @@ Sobre el rol: su trust acepta **únicamente** tokens de push a `main` del repo `
 
 A partir de ahí cada merge a `main` despliega. También se puede lanzar a mano desde Actions → Deploy → Run workflow.
 
+## Envío de WhatsApp (`src/lib/whatsapp.ts`)
+
+Un solo módulo para las dos Lambdas, sobre `SendWhatsAppMessage` de End User Messaging Social:
+
+| Función | Cuándo | Ventana de 24 h |
+|---|---|---|
+| `sendTemplate(phone, name, params)` | Mensajes iniciados por HOP (aviso de paquete listo) | No aplica: siempre se puede |
+| `sendText(phone, text)` | Respuestas del agente | Obligatoria: lanza `OutsideWindowError` si el cliente no escribió en las últimas 24 h |
+| `sendLocation(phone, {lat, lng, name, address})` | Pin del Punto HOP | Obligatoria |
+
+Detalles que importan: el destino se normaliza a E.164 **con `+`** (AWS lo exige), el body sigue el formato de la Cloud API de Meta y el ID del número sale de `PHONE_NUMBER_ID` (que el stack llena desde SSM). `src/lib/dynamo.ts` expone los repos tipados de las tres tablas, con `touchInbound` para abrir la ventana, asignar `sessionId` y deduplicar por `messageId`.
+
+Prueba manual (el número va por argumento, nunca al repo):
+
+```bash
+AWS_PROFILE=dino-dev npm run send:test -- +5491112345678 template paquete_listo "Ana" "Punto HOP Palermo" "5"
+AWS_PROFILE=dino-dev npm run send:test -- +5491112345678 text "hola desde HOP"     # requiere ventana abierta
+AWS_PROFILE=dino-dev npm run send:test -- +5491112345678 location                  # requiere ventana abierta
+```
+
 ## Datos de prueba
 
 ```bash
