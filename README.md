@@ -135,7 +135,23 @@ AWS_PROFILE=dino-dev npm run send:test -- +5491112345678 location               
 | `hopPointId` | id de `hop-hackathon-hop-points` | solo para `READY_AT_HOP` |
 | `deadlineDays` | 1 a 30 | solo para `READY_AT_HOP` |
 
-Respuesta `202 { trackingId, status, notified, messageId? }`. Con `READY_AT_HOP` se guarda `deadlineAt` y se envía la plantilla `paquete_listo` con `[nombre, Punto HOP, días]`. Si el envío falla (por ejemplo la plantilla todavía no está aprobada en Meta), el estado igual queda persistido y vuelve `notified: false`; el detalle queda en el log de la Lambda. `400` por body, path o Punto HOP inválidos; `404` si el paquete no existe.
+`hopPointId` y `deadlineDays` solo se aceptan con `READY_AT_HOP`.
+
+Respuestas:
+
+| Código | Cuándo |
+|---|---|
+| `202 { trackingId, status, notified, messageId?, duplicate? }` | Estado guardado. Con `READY_AT_HOP` se guarda `deadlineAt` (fin del día N en hora de Buenos Aires) y se envía `paquete_listo` con `[nombre, Punto HOP, días]`. |
+| `400` | Body, path o Punto HOP inválidos. |
+| `404` | El paquete no existe. |
+| `409` | Transición no permitida (`DELIVERED` y `RETURNED` son terminales) o el paquete cambió entre la lectura y la escritura: reintentar. |
+| `503` | El envío de la plantilla falló por una causa transitoria (throttling, timeout). El estado quedó guardado; reintentar es seguro. |
+
+Garantías:
+- **Idempotente**: un `READY_AT_HOP` repetido para el mismo punto no reenvía la plantilla ni corre el plazo (`duplicate: true`). Si cambia el punto, se avisa de nuevo con plazo nuevo.
+- El resultado del aviso queda en el paquete (`readyNotificationStatus: SENT | FAILED`, `readyMessageId`, `readyNotificationError`).
+- Si el envío falla de forma permanente (por ejemplo la plantilla todavía no está aprobada en Meta) responde `202` con `notified: false`, registra `FAILED` y emite la métrica `HopHackathon/TemplateSendFailed`, que tiene alarma (`hop-hackathon-template-send-failed`).
+- La Lambda tiene timeout de 20 s y los clientes del SDK 5 s por request, siempre por debajo de los 29 s de API Gateway.
 
 ## Datos de prueba
 

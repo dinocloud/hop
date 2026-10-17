@@ -6,6 +6,23 @@
 export const PACKAGE_STATUSES = ['IN_TRANSIT', 'READY_AT_HOP', 'DELIVERED', 'RETURNED'] as const;
 export type PackageStatus = (typeof PACKAGE_STATUSES)[number];
 
+/**
+ * Transiciones de estado permitidas. `DELIVERED` y `RETURNED` son terminales: un aviso
+ * atrasado o repetido no puede "revivir" un paquete que el cliente ya retiró.
+ */
+export const ALLOWED_TRANSITIONS: Record<PackageStatus, readonly PackageStatus[]> = {
+  IN_TRANSIT: ['IN_TRANSIT', 'READY_AT_HOP', 'DELIVERED', 'RETURNED'],
+  READY_AT_HOP: ['READY_AT_HOP', 'IN_TRANSIT', 'DELIVERED', 'RETURNED'],
+  DELIVERED: [],
+  RETURNED: [],
+};
+
+export function canTransition(from: PackageStatus, to: PackageStatus): boolean {
+  return ALLOWED_TRANSITIONS[from].includes(to);
+}
+
+export type ReadyNotificationStatus = 'SENT' | 'FAILED';
+
 /** Tabla `hop-hackathon-packages`. PK `trackingId`. GSI `byPhone` (PK `phone`, SK `updatedAt`). */
 export interface Package {
   trackingId: string;
@@ -15,10 +32,16 @@ export interface Package {
   status: PackageStatus;
   /** Punto HOP asignado. Obligatorio cuando `status = READY_AT_HOP`. */
   hopPointId?: string;
-  /** Fecha límite de retiro, ISO 8601. Solo aplica en `READY_AT_HOP`. */
+  /** Fecha límite de retiro, ISO 8601 (fin del día N en Buenos Aires). Solo aplica en `READY_AT_HOP`. */
   deadlineAt?: string;
   /** Fecha reprogramada de entrega, ISO 8601. */
   scheduledAt?: string;
+  /** Resultado del aviso "paquete listo" para el `hopPointId` actual. Evita avisar dos veces. */
+  readyNotificationStatus?: ReadyNotificationStatus;
+  readyNotifiedAt?: string;
+  readyMessageId?: string;
+  /** Nombre del error del último intento fallido (sin detalles sensibles). */
+  readyNotificationError?: string;
   updatedAt: string;
 }
 

@@ -7,8 +7,9 @@ import {
   type UpdateCommandInput,
 } from '@aws-sdk/lib-dynamodb';
 import { randomUUID } from 'node:crypto';
+import { SDK_TIMEOUTS } from './aws-errors.js';
 import { normalizePhone } from './phone.js';
-import type { Conversation, HopPoint, InboundMessage, Package, PackageStatus } from './types.js';
+import type { Conversation, HopPoint, InboundMessage, Package, PackageStatus, ReadyNotificationStatus } from './types.js';
 import { requireEnv } from './types.js';
 
 export interface TableNames {
@@ -28,6 +29,26 @@ export interface PackageStatusPatch {
   hopPointId?: string;
   deadlineAt?: string;
   scheduledAt?: string;
+  /** Borra el registro del aviso "paquete listo" (cambio de estado o de Punto HOP). */
+  resetReadyNotification?: boolean;
+}
+
+export interface UpdateOptions {
+  /** Control de concurrencia optimista: la escritura falla con `ConcurrentUpdateError` si `updatedAt` cambió. */
+  expectedUpdatedAt?: string;
+}
+
+export interface ReadyNotificationPatch {
+  status: ReadyNotificationStatus;
+  messageId?: string;
+  error?: string;
+}
+
+export class ConcurrentUpdateError extends Error {
+  constructor(readonly trackingId: string) {
+    super(`El paquete ${trackingId} cambió durante el procesamiento`);
+    this.name = 'ConcurrentUpdateError';
+  }
 }
 
 /** Lease de procesamiento de un mensaje entrante. Más largo que el timeout de la Lambda (60 s). */
@@ -52,7 +73,8 @@ export function tableNamesFromEnv(): TableNames {
 }
 
 export function createDocumentClient(): DynamoDBDocumentClient {
-  return DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  // Timeouts explícitos: sin ellos el SDK puede colgarse más que el timeout de la Lambda.
+  return DynamoDBDocumentClient.from(new DynamoDBClient({ requestHandler: { ...SDK_TIMEOUTS } }), {
     marshallOptions: { removeUndefinedValues: true },
   });
 }
@@ -88,8 +110,16 @@ export function createRepos(deps: ReposDeps = {}) {
     return (res.Items ?? []) as Package[];
   }
 
-  /** Actualiza el estado y devuelve el paquete completo. Lanza `PackageNotFoundError` si no existe. */
-  async function updatePackageStatus(trackingId: string, patch: PackageStatusPatch, now = new Date()): Promise<Package> {
+  /**
+   * Actualiza el estado y devuelve el paquete completo. Lanza `PackageNotFoundError` si no
+   * existe y `ConcurrentUpdateError` si se pasó `expectedUpdatedAt` y el paquete cambió.
+   */
+  async function updatePackageStatus(
+    trackingId: string,
+    patch: PackageStatusPatch,
+    now = new Date(),
+    options: UpdateOptions = {},
+  ): Promise<Package> {
     const sets: string[] = ['#status = :status', '#updatedAt = :updatedAt'];
     const removes: string[] = [];
     const names: Record<string, string> = { '#status': 'status', '#updatedAt': 'updatedAt' };
@@ -107,12 +137,24 @@ export function createRepos(deps: ReposDeps = {}) {
         removes.push(`#${field}`);
       }
     }
+    if (patch.resetReadyNotification) {
+      for (const field of ['readyNotificationStatus', 'readyNotifiedAt', 'readyMessageId', 'readyNotificationError'] as const) {
+        names[`#${field}`] = field;
+        removes.push(`#${field}`);
+      }
+    }
+
+    const conditions = ['attribute_exists(trackingId)'];
+    if (options.expectedUpdatedAt !== undefined) {
+      conditions.push('#updatedAt = :expectedUpdatedAt');
+      values[':expectedUpdatedAt'] = options.expectedUpdatedAt;
+    }
 
     const input: UpdateCommandInput = {
       TableName: tables.packages,
       Key: { trackingId },
       UpdateExpression: `SET ${sets.join(', ')}${removes.length ? ` REMOVE ${removes.join(', ')}` : ''}`,
-      ConditionExpression: 'attribute_exists(trackingId)',
+      ConditionExpression: conditions.join(' AND '),
       ExpressionAttributeNames: names,
       ExpressionAttributeValues: values,
       ReturnValues: 'ALL_NEW',
@@ -122,9 +164,47 @@ export function createRepos(deps: ReposDeps = {}) {
       const res = await doc.send(new UpdateCommand(input));
       return res.Attributes as Package;
     } catch (err) {
-      if (isConditionalCheckFailed(err)) throw new PackageNotFoundError(trackingId);
+      if (isConditionalCheckFailed(err)) {
+        if (options.expectedUpdatedAt !== undefined) throw new ConcurrentUpdateError(trackingId);
+        throw new PackageNotFoundError(trackingId);
+      }
       throw err;
     }
+  }
+
+  /** Registra el resultado del aviso "paquete listo" en el paquete. */
+  async function markReadyNotification(trackingId: string, patch: ReadyNotificationPatch, now = new Date()): Promise<void> {
+    const sets = ['#readyNotificationStatus = :status', '#readyNotifiedAt = :at'];
+    const removes: string[] = [];
+    const names: Record<string, string> = {
+      '#readyNotificationStatus': 'readyNotificationStatus',
+      '#readyNotifiedAt': 'readyNotifiedAt',
+      '#readyMessageId': 'readyMessageId',
+      '#readyNotificationError': 'readyNotificationError',
+    };
+    const values: Record<string, unknown> = { ':status': patch.status, ':at': now.toISOString() };
+    if (patch.messageId !== undefined) {
+      sets.push('#readyMessageId = :messageId');
+      values[':messageId'] = patch.messageId;
+    } else {
+      removes.push('#readyMessageId');
+    }
+    if (patch.error !== undefined) {
+      sets.push('#readyNotificationError = :error');
+      values[':error'] = patch.error;
+    } else {
+      removes.push('#readyNotificationError');
+    }
+    await doc.send(
+      new UpdateCommand({
+        TableName: tables.packages,
+        Key: { trackingId },
+        UpdateExpression: `SET ${sets.join(', ')}${removes.length ? ` REMOVE ${removes.join(', ')}` : ''}`,
+        ConditionExpression: 'attribute_exists(trackingId)',
+        ExpressionAttributeNames: names,
+        ExpressionAttributeValues: values,
+      }),
+    );
   }
 
   async function getHopPoint(id: string): Promise<HopPoint | undefined> {
@@ -213,6 +293,7 @@ export function createRepos(deps: ReposDeps = {}) {
     getPackage,
     getPackagesByPhone,
     updatePackageStatus,
+    markReadyNotification,
     getHopPoint,
     getConversation,
     touchInbound,
