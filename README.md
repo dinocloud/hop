@@ -121,6 +121,22 @@ AWS_PROFILE=dino-dev npm run send:test -- +5491112345678 text "hola desde HOP"  
 AWS_PROFILE=dino-dev npm run send:test -- +5491112345678 location                  # requiere ventana abierta
 ```
 
+## Hook de estado del paquete
+
+`POST /packages/{trackingId}/status` con header `x-api-key`. Body:
+
+```json
+{ "status": "READY_AT_HOP", "hopPointId": "hop-palermo", "deadlineDays": 5 }
+```
+
+| Campo | Valores | Obligatorio |
+|---|---|---|
+| `status` | `IN_TRANSIT` · `READY_AT_HOP` · `DELIVERED` · `RETURNED` | sí |
+| `hopPointId` | id de `hop-hackathon-hop-points` | solo para `READY_AT_HOP` |
+| `deadlineDays` | 1 a 30 | solo para `READY_AT_HOP` |
+
+Respuesta `202 { trackingId, status, notified, messageId? }`. Con `READY_AT_HOP` se guarda `deadlineAt` y se envía la plantilla `paquete_listo` con `[nombre, Punto HOP, días]`. Si el envío falla (por ejemplo la plantilla todavía no está aprobada en Meta), el estado igual queda persistido y vuelve `notified: false`; el detalle queda en el log de la Lambda. `400` por body, path o Punto HOP inválidos; `404` si el paquete no existe.
+
 ## Datos de prueba
 
 ```bash
