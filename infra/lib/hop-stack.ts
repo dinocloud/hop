@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as cdk from 'aws-cdk-lib';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -25,6 +26,9 @@ export interface HopStackProps extends cdk.StackProps {
 
 /** Prefijo de todos los recursos: la cuenta es compartida con otros proyectos. */
 export const PREFIX = 'hop-hackathon';
+
+/** Tope de concurrencia por Lambda: acota el impacto sobre el pool compartido de la cuenta. */
+const RESERVED_CONCURRENCY = 10;
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -55,12 +59,20 @@ export class HopStack extends cdk.Stack {
     // Configuración externa (setup de WhatsApp). Se resuelve en deploy desde SSM.
     // ----------------------------------------------------------------------
     const ssmWhatsApp = `/${PREFIX}/${stage}/whatsapp`;
-    const phoneNumberId = ssm.StringParameter.valueForStringParameter(this, `${ssmWhatsApp}/aws-phone-number-id`);
+    // ID de AWS del número: `phone-number-id-<hex>`. Es el `originationPhoneNumberId` de la API.
+    const originationPhoneNumberId = ssm.StringParameter.valueForStringParameter(
+      this,
+      `${ssmWhatsApp}/aws-phone-number-id`,
+    );
     const inboundTopicArn = ssm.StringParameter.valueForStringParameter(this, `${ssmWhatsApp}/inbound-topic-arn`);
+
+    // El ARN del número NO repite el prefijo del ID:
+    //   id : phone-number-id-3967ed...
+    //   arn: arn:aws:social-messaging:us-east-1:<cuenta>:phone-number-id/3967ed...
     const phoneNumberArn = cdk.Stack.of(this).formatArn({
       service: 'social-messaging',
       resource: 'phone-number-id',
-      resourceName: phoneNumberId,
+      resourceName: cdk.Fn.select(1, cdk.Fn.split('phone-number-id-', originationPhoneNumberId)),
       arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
     });
 
@@ -107,7 +119,7 @@ export class HopStack extends cdk.Stack {
       [ENV.PACKAGES_TABLE]: this.packagesTable.tableName,
       [ENV.HOP_POINTS_TABLE]: this.hopPointsTable.tableName,
       [ENV.CONVERSATIONS_TABLE]: this.conversationsTable.tableName,
-      [ENV.PHONE_NUMBER_ID]: phoneNumberId,
+      [ENV.ORIGINATION_PHONE_NUMBER_ID]: originationPhoneNumberId,
       [ENV.TEMPLATE_NAME]: templateName,
       POWERTOOLS_LOG_LEVEL: 'INFO',
       NODE_OPTIONS: '--enable-source-maps',
@@ -119,6 +131,22 @@ export class HopStack extends cdk.Stack {
         retention: logs.RetentionDays.TWO_WEEKS,
         removalPolicy: cdk.RemovalPolicy.DESTROY,
       });
+      // Rol propio en lugar de AWSLambdaBasicExecutionRole: escritura de logs acotada a SU log group.
+      const role = new iam.Role(this, `${name}Role`, {
+        roleName: `${PREFIX}-${name}-role`,
+        assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+        inlinePolicies: {
+          logs: new iam.PolicyDocument({
+            statements: [
+              new iam.PolicyStatement({
+                sid: 'WriteOwnLogs',
+                actions: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+                resources: [logGroup.logGroupArn, `${logGroup.logGroupArn}:*`],
+              }),
+            ],
+          }),
+        },
+      });
       const fn = new NodejsFunction(this, `${name}Fn`, {
         functionName: `${PREFIX}-${name}`,
         description: `HOP hackathon - ${name}`,
@@ -128,6 +156,8 @@ export class HopStack extends cdk.Stack {
         architecture: lambda.Architecture.ARM_64,
         memorySize: 512,
         timeout,
+        role,
+        reservedConcurrentExecutions: RESERVED_CONCURRENCY,
         tracing: lambda.Tracing.ACTIVE,
         logGroup,
         environment: { ...commonEnv, POWERTOOLS_SERVICE_NAME: `${PREFIX}-${name}` },
@@ -139,18 +169,16 @@ export class HopStack extends cdk.Stack {
           bundleAwsSDK: true,
         },
       });
+      // X-Ray exige recurso * para PutTraceSegments/PutTelemetryRecords. La supresión se limita a
+      // ese caso; un test del stack verifica que ningún otro statement use Resource "*".
       NagSuppressions.addResourceSuppressions(
-        fn,
+        role,
         [
-          {
-            id: 'AwsSolutions-IAM4',
-            reason: 'AWSLambdaBasicExecutionRole solo otorga escritura de logs; es el mínimo para una Lambda.',
-            appliesTo: ['Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'],
-          },
+          { id: 'AwsSolutions-IAM5', reason: 'X-Ray exige recurso * para PutTraceSegments/PutTelemetryRecords.', appliesTo: ['Resource::*'] },
           {
             id: 'AwsSolutions-IAM5',
-            reason: 'X-Ray exige recurso * para PutTraceSegments/PutTelemetryRecords.',
-            appliesTo: ['Resource::*'],
+            reason: 'Los log streams viven bajo el propio log group de la función (<arn>:*); no es un comodín sobre otros log groups.',
+            appliesTo: [`Resource::<${this.getLogicalId(logGroup.node.defaultChild as logs.CfnLogGroup)}.Arn>:*`],
           },
         ],
         true,
@@ -161,14 +189,12 @@ export class HopStack extends cdk.Stack {
     this.packageStatusHookFn = makeFunction('package-status-hook', 'package-status-hook', cdk.Duration.seconds(30));
     this.inboundRouterFn = makeFunction('inbound-router', 'inbound-router', cdk.Duration.seconds(60));
 
-    // Permisos mínimos por función. Cada PR amplía solo lo que usa.
-    this.packagesTable.grantReadWriteData(this.packageStatusHookFn);
-    this.hopPointsTable.grantReadData(this.packageStatusHookFn);
-    this.conversationsTable.grantReadData(this.packageStatusHookFn);
-
-    this.packagesTable.grantReadData(this.inboundRouterFn);
-    this.hopPointsTable.grantReadData(this.inboundRouterFn);
-    this.conversationsTable.grantReadWriteData(this.inboundRouterFn);
+    // Permisos mínimos por función y por acción. Cada PR amplía solo lo que usa.
+    // Hook: lee y actualiza paquetes, lee el Punto HOP para el nombre de la plantilla.
+    this.packagesTable.grant(this.packageStatusHookFn, 'dynamodb:GetItem', 'dynamodb:UpdateItem');
+    this.hopPointsTable.grant(this.packageStatusHookFn, 'dynamodb:GetItem');
+    // Router: solo la conversación (ventana de 24 h, sessionId, dedupe). Los paquetes los lee el agente.
+    this.conversationsTable.grant(this.inboundRouterFn, 'dynamodb:GetItem', 'dynamodb:UpdateItem');
 
     for (const fn of [this.packageStatusHookFn, this.inboundRouterFn]) {
       fn.addToRolePolicy(
@@ -178,23 +204,19 @@ export class HopStack extends cdk.Stack {
           resources: [phoneNumberArn],
         }),
       );
-      // grantReadWriteData/grantReadData agregan `table/<name>/index/*` para los GSI.
-      NagSuppressions.addResourceSuppressions(
-        fn,
-        [
-          {
-            id: 'AwsSolutions-IAM5',
-            reason: 'Las grants de DynamoDB incluyen los índices de la tabla con el patrón index/*.',
-            appliesTo: [
-              `Resource::<${this.getLogicalId(this.packagesTable.node.defaultChild as dynamodb.CfnTable)}.Arn>/index/*`,
-              `Resource::<${this.getLogicalId(this.hopPointsTable.node.defaultChild as dynamodb.CfnTable)}.Arn>/index/*`,
-              `Resource::<${this.getLogicalId(this.conversationsTable.node.defaultChild as dynamodb.CfnTable)}.Arn>/index/*`,
-            ],
-          },
-        ],
-        true,
-      );
     }
+    // `grant` sobre una tabla con GSI incluye `table/<name>/index/*`.
+    NagSuppressions.addResourceSuppressions(
+      this.packageStatusHookFn.role!,
+      [
+        {
+          id: 'AwsSolutions-IAM5',
+          reason: 'La grant de DynamoDB incluye los índices de la tabla Packages con el patrón index/*.',
+          appliesTo: [`Resource::<${this.getLogicalId(this.packagesTable.node.defaultChild as dynamodb.CfnTable)}.Arn>/index/*`],
+        },
+      ],
+      true,
+    );
 
     // ----------------------------------------------------------------------
     // Mensajes entrantes: SNS (End User Messaging Social) → inbound-router
@@ -213,11 +235,25 @@ export class HopStack extends cdk.Stack {
     inboundTopic.addSubscription(new subs.LambdaSubscription(this.inboundRouterFn, { deadLetterQueue: inboundDlq }));
 
     // SNS invoca la Lambda de forma asíncrona: reintentos acotados y los fallos van a la DLQ.
+    // La DLQ recibe dos formatos: el mensaje crudo de SNS (fallo de entrega) y el envelope de
+    // Lambda Destinations (fallo de ejecución). Un redrive tiene que contemplar ambos.
     new lambda.EventInvokeConfig(this, 'InboundRouterInvokeConfig', {
       function: this.inboundRouterFn,
       retryAttempts: 2,
       maxEventAge: cdk.Duration.minutes(10),
       onFailure: new destinations.SqsDestination(inboundDlq),
+    });
+
+    // Un mensaje de un cliente en la DLQ es una conversación sin respuesta: alarma visible en
+    // CloudWatch. El ticket de observabilidad le suma la acción de notificación.
+    new cloudwatch.Alarm(this, 'InboundDlqAlarm', {
+      alarmName: `${PREFIX}-inbound-dlq-not-empty`,
+      alarmDescription: 'Hay mensajes de WhatsApp sin procesar en la DLQ de hop-hackathon',
+      metric: inboundDlq.metricApproximateNumberOfMessagesVisible({ period: cdk.Duration.minutes(1), statistic: 'Maximum' }),
+      threshold: 0,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
     // ----------------------------------------------------------------------
@@ -235,7 +271,7 @@ export class HopStack extends cdk.Stack {
       endpointTypes: [apigw.EndpointType.REGIONAL],
       apiKeySourceType: apigw.ApiKeySourceType.HEADER,
       // La cuenta ya tiene configurado el rol de CloudWatch para API Gateway (es un
-      // setting a nivel cuenta, compartido). No lo tocamos.
+      // setting a nivel cuenta, compartido). No lo tocamos. cdk.json además lo desactiva por defecto.
       cloudWatchRole: false,
       deployOptions: {
         stageName: stage,
@@ -249,6 +285,15 @@ export class HopStack extends cdk.Stack {
         accessLogFormat: apigw.AccessLogFormat.jsonWithStandardFields(),
       },
     });
+
+    // Con loggingLevel INFO el servicio crea solo este log group, sin retención y fuera del
+    // stack. Se declara acá para que tenga retención y se borre con el stack.
+    const apiExecutionLogs = new logs.LogGroup(this, 'ApiExecutionLogs', {
+      logGroupName: `API-Gateway-Execution-Logs_${this.api.restApiId}/${stage}`,
+      retention: logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    this.api.deploymentStage.node.addDependency(apiExecutionLogs);
 
     const packageStatusModel = this.api.addModel('PackageStatusModel', {
       modelName: 'PackageStatus',
@@ -273,8 +318,10 @@ export class HopStack extends cdk.Stack {
       validateRequestParameters: true,
     });
 
+    // La validación de API Gateway aplica solo a `application/json`; la Lambda vuelve a validar
+    // el body con zod, así que un Content-Type distinto no se saltea nada.
     const statusResource = this.api.root.addResource('packages').addResource('{trackingId}').addResource('status');
-    statusResource.addMethod('POST', new apigw.LambdaIntegration(this.packageStatusHookFn, { proxy: true }), {
+    const statusMethod = statusResource.addMethod('POST', new apigw.LambdaIntegration(this.packageStatusHookFn, { proxy: true }), {
       apiKeyRequired: true,
       requestValidator: validator,
       requestModels: { 'application/json': packageStatusModel },
@@ -293,24 +340,23 @@ export class HopStack extends cdk.Stack {
     usagePlan.addApiKey(hookApiKey);
     usagePlan.addApiStage({ stage: this.api.deploymentStage });
 
-    NagSuppressions.addResourceSuppressions(
-      this.api,
-      [
-        {
-          id: 'AwsSolutions-APIG4',
-          reason: 'Integración máquina a máquina protegida con API key + usage plan. Sin usuarios finales; alcance hackathon.',
-        },
-        {
-          id: 'AwsSolutions-COG4',
-          reason: 'No hay usuarios finales: el caller es el sistema de envíos, autenticado con API key.',
-        },
-        {
-          id: 'AwsSolutions-APIG3',
-          reason: 'Sin WAF en el hackathon: el endpoint exige API key y tiene throttling y cuota diaria.',
-        },
-      ],
-      true,
-    );
+    // Supresiones acotadas al método y al stage: un método nuevo sin API key sí dispara cdk-nag.
+    NagSuppressions.addResourceSuppressions(statusMethod, [
+      {
+        id: 'AwsSolutions-APIG4',
+        reason: 'Integración máquina a máquina protegida con API key + usage plan. Sin usuarios finales; alcance hackathon.',
+      },
+      {
+        id: 'AwsSolutions-COG4',
+        reason: 'No hay usuarios finales: el caller es el sistema de envíos, autenticado con API key.',
+      },
+    ]);
+    NagSuppressions.addResourceSuppressions(this.api.deploymentStage, [
+      {
+        id: 'AwsSolutions-APIG3',
+        reason: 'Sin WAF en el hackathon: el endpoint exige API key y tiene throttling y cuota diaria.',
+      },
+    ]);
 
     // ----------------------------------------------------------------------
     // Outputs

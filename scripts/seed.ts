@@ -6,10 +6,12 @@
  *
  * - `SEED_PHONES`: teléfonos del equipo (E.164 con `+`), separados por coma. Nunca van al repo.
  *   Si no se define, se usa un número claramente ficticio y se avisa.
- * - Idempotente: las claves son fijas, correrlo dos veces deja el mismo estado.
+ * - Idempotente: las claves son fijas, correrlo dos veces no duplica nada (solo se renuevan las fechas).
  */
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { BatchWriteCommand, DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { realpathSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import type { HopPoint, Package, PackageStatus } from '../src/lib/types.js';
 
 const PREFIX = 'hop-hackathon';
@@ -104,7 +106,10 @@ async function batchPut(doc: DynamoDBDocumentClient, table: string, items: objec
     };
     let attempts = 0;
     while (unprocessed && Object.keys(unprocessed).length > 0) {
-      if (attempts++ > 5) throw new Error(`No se pudieron escribir todos los ítems en ${table}`);
+      if (attempts > 5) throw new Error(`No se pudieron escribir todos los ítems en ${table}`);
+      // Backoff exponencial para los ítems no procesados (throttling).
+      if (attempts > 0) await new Promise((r) => setTimeout(r, 100 * 2 ** attempts));
+      attempts++;
       const res = await doc.send(new BatchWriteCommand({ RequestItems: unprocessed as never }));
       unprocessed = res.UnprocessedItems as Record<string, unknown> | undefined;
     }
@@ -129,7 +134,7 @@ async function main(): Promise<void> {
 }
 
 // Solo corre como script; los tests importan las funciones puras.
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   main().catch((err) => {
     console.error(err);
     process.exit(1);

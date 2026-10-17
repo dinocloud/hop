@@ -8,9 +8,9 @@ import { Logger } from '@aws-lambda-powertools/logger';
  */
 export const logger = new Logger();
 
-/** `+5491112345678` → `+54******5678`. */
+/** Deja visibles solo los últimos 4 dígitos: `+5491112345678` → `***5678`. */
 export function maskPhone(phone: string | undefined): string {
   if (!phone) return 'unknown';
-  if (phone.length <= 6) return '***';
-  return `${phone.slice(0, 3)}${'*'.repeat(phone.length - 7)}${phone.slice(-4)}`;
+  if (phone.length < 8) return '***';
+  return `***${phone.slice(-4)}`;
 }

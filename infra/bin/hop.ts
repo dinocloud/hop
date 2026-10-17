@@ -17,17 +17,20 @@ const templateName = requireContext('hop:templateName');
 const env: cdk.Environment = { account, region };
 
 // Rol OIDC para GitHub Actions. Se despliega UNA vez a mano (ver README).
+// El id del construct (`HopHackathonCi`) es el que se usa en `cdk deploy`; el nombre físico
+// del stack en CloudFormation lleva el prefijo del proyecto, como todos los recursos.
 new CiStack(app, 'HopHackathonCi', {
   env,
+  stackName: 'hop-hackathon-ci',
   description: 'HOP hackathon - rol OIDC para que GitHub Actions despliegue con CDK',
   githubRepo,
   deployBranches: ['main'],
-  deployEnvironments: ['dev'],
 });
 
 // Stack de la aplicación. Lo despliega el pipeline al mergear a main.
 new HopStack(app, 'HopHackathonDev', {
   env,
+  stackName: `hop-hackathon-${stage}`,
   description: 'HOP hackathon - WhatsApp (End User Messaging Social) + AgentCore',
   stage,
   templateName,

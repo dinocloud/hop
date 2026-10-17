@@ -1,12 +1,14 @@
 name: CI
 
-# Validación en todas las ramas y PRs: tipos, tests, synth con cdk-nag.
+# Validación en todas las ramas: tipos, tests, synth con cdk-nag.
+# - En ramas de trabajo corre en cada push; los checks aparecen en el PR de esa rama.
+# - En main no corre por push: lo invoca deploy.yml (workflow_call) antes de desplegar,
+#   así no se valida dos veces el mismo commit.
 # No necesita credenciales AWS: el synth es determinístico (cuenta/región por contexto,
 # valores de SSM resueltos recién en deploy).
 on:
   push:
-    branches: ['**']
-  pull_request:
+    branches-ignore: [main]
   workflow_call:
 
 permissions:

@@ -9,7 +9,6 @@ describe('CiStack', () => {
     env: { account: '123456789012', region: 'us-east-1' },
     githubRepo: 'dinocloud/hop',
     deployBranches: ['main'],
-    deployEnvironments: ['dev'],
   });
   const template = Template.fromStack(stack);
 
@@ -18,7 +17,7 @@ describe('CiStack', () => {
     template.resourceCountIs('AWS::IAM::OIDCProvider', 0);
   });
 
-  it('acota el trust al repo, la rama main y el environment dev', () => {
+  it('acepta solo tokens de push a main del repo (StringEquals, sin environments ni PRs)', () => {
     template.hasResourceProperties('AWS::IAM::Role', {
       RoleName: 'hop-hackathon-github-deploy',
       MaxSessionDuration: 3600,
@@ -27,21 +26,23 @@ describe('CiStack', () => {
           Match.objectLike({
             Action: 'sts:AssumeRoleWithWebIdentity',
             Condition: {
-              StringEquals: { 'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com' },
-              StringLike: {
-                'token.actions.githubusercontent.com:sub': [
-                  'repo:dinocloud/hop:ref:refs/heads/main',
-                  'repo:dinocloud/hop:environment:dev',
-                ],
+              StringEquals: {
+                'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
+                'token.actions.githubusercontent.com:sub': ['repo:dinocloud/hop:ref:refs/heads/main'],
               },
             },
           }),
         ],
       },
     });
+    const role = Object.values(template.findResources('AWS::IAM::Role'))[0] as { Properties: { AssumeRolePolicyDocument: unknown } };
+    const trust = JSON.stringify(role.Properties.AssumeRolePolicyDocument);
+    expect(trust).not.toContain('environment:');
+    expect(trust).not.toContain('pull_request');
+    expect(trust).not.toContain('StringLike');
   });
 
-  it('solo puede asumir los roles de bootstrap de CDK de la región', () => {
+  it('solo puede asumir los roles de bootstrap de CDK que usa el deploy (sin image-publishing)', () => {
     template.hasResourceProperties('AWS::IAM::Policy', {
       PolicyDocument: {
         Statement: [
@@ -49,15 +50,16 @@ describe('CiStack', () => {
             Sid: 'AssumeCdkBootstrapRoles',
             Effect: 'Allow',
             Action: 'sts:AssumeRole',
-            Resource: Match.arrayWith([
+            Resource: [
               'arn:aws:iam::123456789012:role/cdk-hnb659fds-deploy-role-123456789012-us-east-1',
               'arn:aws:iam::123456789012:role/cdk-hnb659fds-file-publishing-role-123456789012-us-east-1',
-            ]),
+              'arn:aws:iam::123456789012:role/cdk-hnb659fds-lookup-role-123456789012-us-east-1',
+            ],
           },
         ],
       },
     });
-    const policies = template.findResources('AWS::IAM::Policy');
-    expect(Object.keys(policies)).toHaveLength(1);
+    expect(Object.keys(template.findResources('AWS::IAM::Policy'))).toHaveLength(1);
+    expect(Object.keys(template.findResources('AWS::IAM::Role'))).toHaveLength(1);
   });
 });

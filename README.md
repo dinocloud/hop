@@ -19,7 +19,7 @@ WhatsApp ──► End User Messaging Social ──► SNS hop-hackathon-whatsap
                                                                                          └──► End User Messaging Social (texto + ubicación)
 ```
 
-Todo vive en un stack CDK, `HopHackathonDev`, en la cuenta `dino-dev` (`359328299440`, `us-east-1`). La cuenta es **compartida con otros proyectos**: todos los recursos llevan el prefijo `hop-hackathon-` y las tags `Project=hop-hackathon`, `Environment=dev`, `ManagedBy=cdk`.
+Todo vive en un stack CDK, `HopHackathonDev` (nombre físico en CloudFormation: `hop-hackathon-dev`), en la cuenta `dino-dev` (`359328299440`, `us-east-1`). La cuenta es **compartida con otros proyectos**: todos los recursos llevan el prefijo `hop-hackathon-` y las tags `Project=hop-hackathon`, `Environment=dev`, `ManagedBy=cdk`.
 
 ### Lo que el stack NO crea
 
@@ -76,7 +76,9 @@ npm run synth       # cdk synth --strict con cdk-nag (sin credenciales)
 
 ### Deploy (al mergear a `main`)
 
-`deploy.yml` asume por OIDC el rol `hop-hackathon-github-deploy` y corre `cdk diff` + `cdk deploy HopHackathonDev --exclusively`. El rol solo puede asumir los roles de bootstrap de CDK de la región: no tiene permisos propios sobre servicios.
+`deploy.yml` asume por OIDC el rol `hop-hackathon-github-deploy` y corre `cdk diff` + `cdk deploy HopHackathonDev --exclusively`. El job solo corre si la ref es `main` (también con `workflow_dispatch`).
+
+Sobre el rol: su trust acepta **únicamente** tokens de push a `main` del repo `dinocloud/hop` (ni environments, ni PRs, ni otras ramas) y solo puede asumir los roles de bootstrap de CDK de la región. Ojo: el rol de ejecución de CloudFormation del bootstrap (`cfn-exec-role`) tiene AdministratorAccess en la cuenta, como en cualquier bootstrap por defecto, así que **quien pueda mergear a `main` puede desplegar cualquier cosa en la cuenta compartida**. Por eso `main` tiene que estar protegida en GitHub: PR obligatorio con al menos una revisión y sin push directo.
 
 **Setup único** (una sola vez, lo hace alguien con acceso a la cuenta):
 
@@ -85,7 +87,7 @@ npm run synth       # cdk synth --strict con cdk-nag (sin credenciales)
    AWS_PROFILE=dino-dev npm run deploy:ci-role
    ```
 2. Copiar el output `DeployRoleArn` y cargarlo en GitHub como **variable** `AWS_DEPLOY_ROLE_ARN` (Settings → Secrets and variables → Actions → Variables).
-3. Crear el **Environment** `dev` en GitHub (Settings → Environments). Opcional: exigir reviewers para que cada deploy pida aprobación.
+3. Proteger `main` en GitHub (Settings → Branches → Branch protection rule): PR obligatorio con 1 revisión, sin push directo, checks de CI requeridos. No es opcional: es la puerta de entrada al deploy.
 
 A partir de ahí cada merge a `main` despliega. También se puede lanzar a mano desde Actions → Deploy → Run workflow.
 
@@ -101,8 +103,8 @@ Carga 3 Puntos HOP de CABA y 10 paquetes en distintos estados. Los primeros paqu
 
 ```bash
 export AWS_PROFILE=dino-dev AWS_REGION=us-east-1
-API_URL=$(aws cloudformation describe-stacks --stack-name HopHackathonDev --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text)
-KEY_ID=$(aws cloudformation describe-stacks --stack-name HopHackathonDev --query "Stacks[0].Outputs[?OutputKey=='HookApiKeyId'].OutputValue" --output text)
+API_URL=$(aws cloudformation describe-stacks --stack-name hop-hackathon-dev --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text)
+KEY_ID=$(aws cloudformation describe-stacks --stack-name hop-hackathon-dev --query "Stacks[0].Outputs[?OutputKey=='HookApiKeyId'].OutputValue" --output text)
 API_KEY=$(aws apigateway get-api-key --api-key "$KEY_ID" --include-value --query value --output text)
 
 # Datos cargados
@@ -116,9 +118,9 @@ curl -s -X POST "${API_URL}packages/HOP-0001/status" \
 
 ## Criterios AWS que sigue el proyecto
 
-- **IAM de mínimo privilegio**: grants por tabla, `SendWhatsAppMessage` acotado al ARN del número, roles con condiciones anti confused deputy.
+- **IAM de mínimo privilegio**: permisos de DynamoDB por tabla y por acción, `SendWhatsAppMessage` acotado al ARN del número, roles propios por Lambda con escritura de logs limitada a su log group (sin `AWSLambdaBasicExecutionRole`). Un test del stack falla si aparece un `Resource: "*"` que no sea de X-Ray.
 - **Nada hardcodeado**: IDs y ARNs desde SSM en deploy; teléfonos del equipo por variable de entorno.
-- **Lambdas**: Node 24, arm64, bundling con esbuild (sin Docker), logs JSON con Powertools, X-Ray, retención de logs 14 días, DLQ para los eventos de SNS.
+- **Lambdas**: Node 24, arm64, bundling con esbuild (sin Docker), logs JSON con Powertools, X-Ray, retención de logs 14 días, concurrencia reservada de 10 (acota el impacto sobre el pool compartido), DLQ con alarma para los eventos de SNS.
 - **API**: API key + usage plan con throttling y cuota, validación de body y path, access logs. El rol de CloudWatch de API Gateway es un setting a nivel cuenta que ya existe: el stack no lo toca.
 - **DynamoDB**: on-demand, PITR, cifrado. `RemovalPolicy.DESTROY` a propósito para poder limpiar la cuenta compartida al terminar el hackathon.
 - **cdk-nag** en cada synth.

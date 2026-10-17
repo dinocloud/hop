@@ -5,20 +5,24 @@ import { Construct } from 'constructs';
 export interface CiStackProps extends cdk.StackProps {
   /** `owner/repo` en GitHub. */
   readonly githubRepo: string;
-  /** Ramas que pueden desplegar (push). */
+  /** Ramas que pueden desplegar (push). Solo `main` en este proyecto. */
   readonly deployBranches: string[];
-  /** GitHub Environments que pueden desplegar. */
-  readonly deployEnvironments: string[];
 }
 
 /**
  * Rol que asume GitHub Actions por OIDC para correr `cdk deploy`.
  *
- * Reglas:
+ * Importante: el rol de ejecución de CloudFormation del bootstrap de CDK (`cfn-exec-role`)
+ * tiene AdministratorAccess en esta cuenta, como en cualquier bootstrap por defecto. Por eso
+ * quien pueda asumir este rol puede, en la práctica, tocar toda la cuenta compartida. Los
+ * controles son:
+ * - El trust acepta ÚNICAMENTE tokens emitidos para un push a las ramas de `deployBranches`
+ *   del repo. No se aceptan subjects de environments, PRs ni otras ramas.
+ * - En GitHub, `main` tiene que estar protegida (PR con revisión obligatoria): es la puerta
+ *   real de entrada al deploy.
+ * - El rol solo puede asumir los roles de bootstrap de CDK de esta región; no tiene permisos
+ *   propios sobre servicios.
  * - Reutiliza el proveedor OIDC de GitHub que ya existe en la cuenta. No lo crea ni lo modifica.
- * - El trust queda acotado al repo, a las ramas y a los environments indicados.
- * - El rol solo puede asumir los roles de bootstrap de CDK de esta región. No tiene
- *   permisos propios sobre servicios: CloudFormation ejecuta con `cfn-exec-role`.
  */
 export class CiStack extends cdk.Stack {
   readonly deployRole: iam.Role;
@@ -29,24 +33,24 @@ export class CiStack extends cdk.Stack {
     const providerArn = `arn:aws:iam::${this.account}:oidc-provider/token.actions.githubusercontent.com`;
     const provider = iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(this, 'GithubOidcProvider', providerArn);
 
-    const subjects = [
-      ...props.deployBranches.map((branch) => `repo:${props.githubRepo}:ref:refs/heads/${branch}`),
-      ...props.deployEnvironments.map((environment) => `repo:${props.githubRepo}:environment:${environment}`),
-    ];
+    const subjects = props.deployBranches.map((branch) => `repo:${props.githubRepo}:ref:refs/heads/${branch}`);
 
     this.deployRole = new iam.Role(this, 'DeployRole', {
       roleName: 'hop-hackathon-github-deploy',
-      description: `Deploy de HopHackathonDev desde GitHub Actions (${props.githubRepo})`,
+      description: `Deploy de hop-hackathon-dev desde GitHub Actions (${props.githubRepo}, ramas: ${props.deployBranches.join(', ')})`,
       assumedBy: new iam.WebIdentityPrincipal(provider.openIdConnectProviderArn, {
-        StringEquals: { 'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com' },
-        StringLike: { 'token.actions.githubusercontent.com:sub': subjects },
+        StringEquals: {
+          'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
+          'token.actions.githubusercontent.com:sub': subjects,
+        },
       }),
       maxSessionDuration: cdk.Duration.hours(1),
     });
 
-    // Mínimo privilegio para CDK: solo los roles de bootstrap de esta cuenta/región.
+    // Mínimo privilegio para CDK: solo los roles de bootstrap de esta cuenta/región que usa
+    // `cdk deploy` sin imágenes Docker (deploy, publicación de assets a S3 y lookups).
     // El qualifier `hnb659fds` es el default del bootstrap moderno de CDK.
-    const bootstrapRoles = ['deploy', 'file-publishing', 'image-publishing', 'lookup'].map(
+    const bootstrapRoles = ['deploy', 'file-publishing', 'lookup'].map(
       (name) => `arn:aws:iam::${this.account}:role/cdk-hnb659fds-${name}-role-${this.account}-${this.region}`,
     );
     this.deployRole.addToPolicy(

@@ -1,9 +1,10 @@
 name: Deploy
 
-# Despliega HopHackathonDev al mergear a main (o a mano con workflow_dispatch).
-# Credenciales por OIDC: el rol `hop-hackathon-github-deploy` (stack HopHackathonCi)
-# solo puede asumir los roles de bootstrap de CDK. Variable requerida en GitHub:
-#   AWS_DEPLOY_ROLE_ARN  (Settings > Secrets and variables > Actions > Variables)
+# Despliega hop-hackathon-dev (stack HopHackathonDev) SOLO desde main.
+# Credenciales por OIDC: el rol `hop-hackathon-github-deploy` (stack HopHackathonCi) acepta
+# únicamente tokens de push a main y solo puede asumir los roles de bootstrap de CDK.
+# Variable requerida en GitHub: AWS_DEPLOY_ROLE_ARN
+#   (Settings > Secrets and variables > Actions > Variables)
 on:
   push:
     branches: [main]
@@ -26,11 +27,13 @@ jobs:
       contents: read
 
   deploy:
-    name: Deploy HopHackathonDev
+    name: Deploy hop-hackathon-dev
     needs: validate
+    # workflow_dispatch permite elegir cualquier rama: se corta acá y además el trust del rol
+    # OIDC rechaza tokens que no sean de main.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: dev
     env:
       AWS_REGION: us-east-1
     steps:
