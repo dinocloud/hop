@@ -9,7 +9,10 @@ import { requireEnv } from './types.js';
  */
 
 export class AgentInvocationError extends Error {
-  constructor(message: string, readonly statusCode?: number) {
+  constructor(
+    message: string,
+    readonly statusCode?: number,
+  ) {
     super(message);
     this.name = 'AgentInvocationError';
   }

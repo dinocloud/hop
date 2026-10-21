@@ -91,7 +91,14 @@ describe('tools del agente', () => {
     const { byName } = setup();
     expect(await byName['get_hop_point']!.invoke({ hopPointId: 'hop-palermo' })).toEqual({
       found: true,
-      hopPoint: { id: 'hop-palermo', name: 'Punto HOP Palermo', address: 'Av. Santa Fe 3253, CABA', lat: -34.5885, lng: -58.4106, openingHours: 'Lun a Vie 9 a 20' },
+      hopPoint: {
+        id: 'hop-palermo',
+        name: 'Punto HOP Palermo',
+        address: 'Av. Santa Fe 3253, CABA',
+        lat: -34.5885,
+        lng: -58.4106,
+        openingHours: 'Lun a Vie 9 a 20',
+      },
     });
     expect(await byName['get_hop_point']!.invoke({ hopPointId: 'hop-nope' })).toEqual({ found: false });
   });

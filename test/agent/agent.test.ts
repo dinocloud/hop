@@ -17,7 +17,14 @@ import type { Repos } from '../../src/lib/dynamo.js';
 import type { HopPoint } from '../../src/lib/types.js';
 
 const PHONE = '+5491112345678';
-const palermo: HopPoint = { id: 'hop-palermo', name: 'Punto HOP Palermo', address: 'Av. Santa Fe 3253, CABA', lat: -34.5885, lng: -58.4106, openingHours: 'Lun a Vie 9 a 20' };
+const palermo: HopPoint = {
+  id: 'hop-palermo',
+  name: 'Punto HOP Palermo',
+  address: 'Av. Santa Fe 3253, CABA',
+  lat: -34.5885,
+  lng: -58.4106,
+  openingHours: 'Lun a Vie 9 a 20',
+};
 const getHopPoint = async (id: string) => (id === 'hop-palermo' ? palermo : undefined);
 
 function fakeAgent(stopReason: string, text: string) {
@@ -107,9 +114,15 @@ describe('askAgent', () => {
     expect(INVOKE_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
   });
   it('si el agente no termina el turno (max_tokens, cancelación) lanza en vez de devolver basura', async () => {
-    await expect(askAgent(fakeAgent('maxTokens', 'parcial'), 'hola', { getHopPoint, canShowPin: async () => true })).rejects.toThrow(AgentStoppedError);
-    await expect(askAgent(fakeAgent('cancelled', 'Cancelled by user'), 'hola', { getHopPoint, canShowPin: async () => true })).rejects.toThrow(AgentStoppedError);
-    await expect(askAgent(fakeAgent('limitTurns', 'parcial'), 'hola', { getHopPoint, canShowPin: async () => true })).rejects.toThrow(AgentStoppedError);
+    await expect(askAgent(fakeAgent('maxTokens', 'parcial'), 'hola', { getHopPoint, canShowPin: async () => true })).rejects.toThrow(
+      AgentStoppedError,
+    );
+    await expect(
+      askAgent(fakeAgent('cancelled', 'Cancelled by user'), 'hola', { getHopPoint, canShowPin: async () => true }),
+    ).rejects.toThrow(AgentStoppedError);
+    await expect(askAgent(fakeAgent('limitTurns', 'parcial'), 'hola', { getHopPoint, canShowPin: async () => true })).rejects.toThrow(
+      AgentStoppedError,
+    );
   });
 });
 
@@ -191,7 +204,11 @@ describe('createInvocationHandler', () => {
   });
 
   it('el log nunca lleva el teléfono completo', async () => {
-    const handle = createInvocationHandler({ repos, agentFactory: () => ({ invoke: vi.fn() }), ask: async () => ({ text: 'ok', location: null }) });
+    const handle = createInvocationHandler({
+      repos,
+      agentFactory: () => ({ invoke: vi.fn() }),
+      ask: async () => ({ text: 'ok', location: null }),
+    });
     const localLog = { info: vi.fn(), warn: vi.fn() };
     await handle({ phone: PHONE, text: 'hola' }, { sessionId: 's4', log: localLog });
     expect(JSON.stringify(localLog.info.mock.calls)).not.toContain('12345678');

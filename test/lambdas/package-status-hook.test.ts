@@ -100,7 +100,9 @@ describe('package-status-hook', () => {
   });
 
   it('READY_AT_HOP repetido con aviso fallido: reintenta el envío con un plazo que coincide con los días del aviso', async () => {
-    ctx = setup(pkg({ status: 'READY_AT_HOP', hopPointId: 'hop-palermo', deadlineAt: '2026-10-20T02:59:59.000Z', readyNotificationStatus: 'FAILED' }));
+    ctx = setup(
+      pkg({ status: 'READY_AT_HOP', hopPointId: 'hop-palermo', deadlineAt: '2026-10-20T02:59:59.000Z', readyNotificationStatus: 'FAILED' }),
+    );
     const res = await ctx.handler(event('HOP-0001', ready));
     expect(res.statusCode).toBe(202);
     expect(parse(res).notified).toBe(true);
@@ -140,7 +142,9 @@ describe('package-status-hook', () => {
   });
 
   it('si la plantilla falla de forma permanente: 202 notified=false, se registra FAILED y la métrica', async () => {
-    vi.mocked(ctx.sender.sendTemplate).mockRejectedValueOnce(Object.assign(new Error('Template name does not exist'), { name: 'ValidationException' }));
+    vi.mocked(ctx.sender.sendTemplate).mockRejectedValueOnce(
+      Object.assign(new Error('Template name does not exist'), { name: 'ValidationException' }),
+    );
     const res = await ctx.handler(event('HOP-0001', ready));
     expect(res.statusCode).toBe(202);
     expect(parse(res)).toEqual({ trackingId: 'HOP-0001', status: 'READY_AT_HOP', notified: false });
@@ -182,12 +186,9 @@ describe('package-status-hook', () => {
     const res = await ctx.handler(event('HOP-0002', { status: 'DELIVERED' }));
     expect(res.statusCode).toBe(202);
     expect(parse(res)).toEqual({ trackingId: 'HOP-0002', status: 'DELIVERED', notified: false });
-    expect(ctx.repos.updatePackageStatus).toHaveBeenCalledWith(
-      'HOP-0002',
-      { status: 'DELIVERED', resetReadyNotification: true },
-      NOW,
-      { expectedUpdatedAt: '2026-10-17T10:00:00Z' },
-    );
+    expect(ctx.repos.updatePackageStatus).toHaveBeenCalledWith('HOP-0002', { status: 'DELIVERED', resetReadyNotification: true }, NOW, {
+      expectedUpdatedAt: '2026-10-17T10:00:00Z',
+    });
     expect(ctx.repos.getHopPoint).not.toHaveBeenCalled();
     expect(ctx.sender.sendTemplate).not.toHaveBeenCalled();
   });
@@ -203,13 +204,16 @@ describe('package-status-hook', () => {
     expect(ctx.sender.sendTemplate).not.toHaveBeenCalled();
   });
 
-  it.each(['DELIVERED', 'RETURNED'] as const)('%s repetido: 202 duplicate, sin escribir (un webhook reintentado no es un conflicto)', async (status) => {
-    ctx = setup(pkg({ status }));
-    const res = await ctx.handler(event('HOP-0001', { status }));
-    expect(res.statusCode).toBe(202);
-    expect(parse(res)).toEqual({ trackingId: 'HOP-0001', status, notified: false, duplicate: true });
-    expect(ctx.repos.updatePackageStatus).not.toHaveBeenCalled();
-  });
+  it.each(['DELIVERED', 'RETURNED'] as const)(
+    '%s repetido: 202 duplicate, sin escribir (un webhook reintentado no es un conflicto)',
+    async (status) => {
+      ctx = setup(pkg({ status }));
+      const res = await ctx.handler(event('HOP-0001', { status }));
+      expect(res.statusCode).toBe(202);
+      expect(parse(res)).toEqual({ trackingId: 'HOP-0001', status, notified: false, duplicate: true });
+      expect(ctx.repos.updatePackageStatus).not.toHaveBeenCalled();
+    },
+  );
 
   it('409 si el paquete cambió entre la lectura y la escritura', async () => {
     vi.mocked(ctx.repos.updatePackageStatus).mockRejectedValueOnce(new ConcurrentUpdateError('HOP-0001'));

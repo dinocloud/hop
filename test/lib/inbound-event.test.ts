@@ -56,7 +56,9 @@ describe('parseInboundEvent', () => {
   });
 
   it('acepta timestamp como número y whatsAppWebhookEntry ya parseado como objeto', () => {
-    const raw = JSON.parse(textEvent([{ from: '5491112345678', id: 'wamid.E', timestamp: 1792238400, type: 'text', text: { body: 'hola' } }]));
+    const raw = JSON.parse(
+      textEvent([{ from: '5491112345678', id: 'wamid.E', timestamp: 1792238400, type: 'text', text: { body: 'hola' } }]),
+    );
     raw.whatsAppWebhookEntry = JSON.parse(raw.whatsAppWebhookEntry);
     const parsed = parseInboundEvent(JSON.stringify(raw));
     expect(parsed.textMessages).toHaveLength(1);
@@ -114,7 +116,13 @@ describe('buildInboundEvent', () => {
 describe('parseInboundEvent con respuestas a botones', () => {
   it('convierte el tap en un botón de plantilla y las respuestas interactivas en texto', () => {
     const event = textEvent([
-      { from: '5491112345678', id: 'wamid.B1', timestamp: '1792238400', type: 'button', button: { text: 'Necesito más tiempo', payload: 'MAS_TIEMPO' } },
+      {
+        from: '5491112345678',
+        id: 'wamid.B1',
+        timestamp: '1792238400',
+        type: 'button',
+        button: { text: 'Necesito más tiempo', payload: 'MAS_TIEMPO' },
+      },
       {
         from: '5491112345678',
         id: 'wamid.B2',
@@ -130,11 +138,17 @@ describe('parseInboundEvent con respuestas a botones', () => {
         interactive: { type: 'list_reply', list_reply: { id: 'l1', title: 'Punto HOP Belgrano' } },
       },
     ]);
-    expect(parseInboundEvent(event).textMessages.map((m) => m.text)).toEqual(['Necesito más tiempo', 'Cambiar de punto', 'Punto HOP Belgrano']);
+    expect(parseInboundEvent(event).textMessages.map((m) => m.text)).toEqual([
+      'Necesito más tiempo',
+      'Cambiar de punto',
+      'Punto HOP Belgrano',
+    ]);
   });
 
   it('ignora reacciones sin contestarlas', () => {
-    const event = textEvent([{ from: '5491112345678', id: 'wamid.R', timestamp: '1792238400', type: 'reaction', reaction: { message_id: 'x', emoji: '👍' } }]);
+    const event = textEvent([
+      { from: '5491112345678', id: 'wamid.R', timestamp: '1792238400', type: 'reaction', reaction: { message_id: 'x', emoji: '👍' } },
+    ]);
     expect(parseInboundEvent(event)).toEqual({ ...empty, otherMessages: 1 });
   });
 });

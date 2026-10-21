@@ -204,7 +204,9 @@ export function createHandler(deps: RouterDeps) {
       return FALLBACK_REPLY;
     }
     try {
-      const reply = await deps.agent.invoke({ phone: message.from, text: message.text.slice(0, MAX_REQUEST_TEXT) }, sessionId, { timeoutMs });
+      const reply = await deps.agent.invoke({ phone: message.from, text: message.text.slice(0, MAX_REQUEST_TEXT) }, sessionId, {
+        timeoutMs,
+      });
       if (reply.degraded) {
         logger.warn('El agente respondió en modo degradado');
         metrics.addMetric(METRICS.agentFailed, MetricUnit.Count, 1);

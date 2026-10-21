@@ -16,7 +16,13 @@ describe('createAgentClient', () => {
   beforeEach(() => agentcore.reset());
 
   it('invoca el runtime con el payload del contrato y devuelve la respuesta validada', async () => {
-    agentcore.on(InvokeAgentRuntimeCommand).resolves(response(JSON.stringify({ text: 'Listo en Palermo', location: { lat: -34.5, lng: -58.4, name: 'HOP', address: 'Calle 1' } })) as never);
+    agentcore
+      .on(InvokeAgentRuntimeCommand)
+      .resolves(
+        response(
+          JSON.stringify({ text: 'Listo en Palermo', location: { lat: -34.5, lng: -58.4, name: 'HOP', address: 'Calle 1' } }),
+        ) as never,
+      );
     const reply = await client.invoke({ phone: '+5491112345678', text: 'hola' }, SESSION);
     expect(reply).toEqual({ text: 'Listo en Palermo', location: { lat: -34.5, lng: -58.4, name: 'HOP', address: 'Calle 1' } });
     const call = agentcore.commandCalls(InvokeAgentRuntimeCommand)[0]!;

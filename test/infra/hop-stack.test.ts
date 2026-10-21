@@ -198,7 +198,9 @@ describe('HopStack', () => {
     expect(JSON.stringify(invoke?.Resource)).toContain('AgentRuntimeArn');
     template.hasResourceProperties('AWS::Lambda::Function', {
       FunctionName: 'hop-hackathon-inbound-router',
-      Environment: { Variables: Match.objectLike({ AGENT_RUNTIME_ARN: Match.objectLike({ 'Fn::GetAtt': Match.arrayWith(['AgentRuntimeArn']) }) }) },
+      Environment: {
+        Variables: Match.objectLike({ AGENT_RUNTIME_ARN: Match.objectLike({ 'Fn::GetAtt': Match.arrayWith(['AgentRuntimeArn']) }) }),
+      },
     });
     template.hasResourceProperties('AWS::SSM::Parameter', { Name: '/hop-hackathon/dev/app/agent-runtime-arn' });
   });
@@ -275,9 +277,9 @@ describe('HopStack', () => {
   });
 
   it('alarma los caminos en los que un cliente se queda sin respuesta', () => {
-    const alarms = Object.values(template.findResources('AWS::CloudWatch::Alarm') as Record<string, { Properties: { AlarmName: string } }>).map(
-      (a) => a.Properties.AlarmName,
-    );
+    const alarms = Object.values(
+      template.findResources('AWS::CloudWatch::Alarm') as Record<string, { Properties: { AlarmName: string } }>,
+    ).map((a) => a.Properties.AlarmName);
     expect(alarms.sort()).toEqual([
       'hop-hackathon-agent-failed',
       'hop-hackathon-inbound-dlq-not-empty',
