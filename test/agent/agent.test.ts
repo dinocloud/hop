@@ -1,6 +1,17 @@
+import type { BedrockModel } from '@strands-agents/sdk/models/bedrock';
 import { describe, expect, it, vi } from 'vitest';
-import { AgentStoppedError, INVOKE_TIMEOUT_MS, MAX_TURNS, askAgent, parseModelReply, toAgentReply } from '../../agent/src/agent.js';
-import { RequestSchema, createInvocationHandler } from '../../agent/src/index.js';
+import {
+  AgentStoppedError,
+  INVOKE_TIMEOUT_MS,
+  InvalidModelReplyError,
+  MAX_TURNS,
+  askAgent,
+  createHopAgent,
+  hasPackageReadyAt,
+  parseModelReply,
+  toAgentReply,
+} from '../../agent/src/agent.js';
+import { MIN_AGENT_TIME_MS, RequestSchema, createInvocationHandler } from '../../agent/src/index.js';
 import { FALLBACK_REPLY } from '../../src/lib/agent-contract.js';
 import type { Repos } from '../../src/lib/dynamo.js';
 import type { HopPoint } from '../../src/lib/types.js';
@@ -21,42 +32,84 @@ describe('parseModelReply', () => {
     });
     expect(parseModelReply('{"text":"En camino"}')).toEqual({ text: 'En camino', hopPointId: null });
   });
-  it('usa el texto crudo si no hay JSON válido, y la disculpa si está vacío', () => {
+  it('usa el texto crudo si el modelo contestó en prosa, y la disculpa si está vacío', () => {
     expect(parseModelReply('Tu paquete llega mañana.')).toEqual({ text: 'Tu paquete llega mañana.', hopPointId: null });
-    expect(parseModelReply('{"text": 1}')).toEqual({ text: '{"text": 1}', hopPointId: null });
     expect(parseModelReply('   ')).toEqual({ text: FALLBACK_REPLY.text, hopPointId: null });
+  });
+  it('rescata el texto de un JSON con saltos de línea sin escapar', () => {
+    // El \n es un salto de línea real dentro del string: JSON.parse lo rechaza.
+    expect(parseModelReply('{"text": "Hola Ana\nTu paquete está listo", "hopPointId": "hop-palermo"}')).toEqual({
+      text: 'Hola Ana\nTu paquete está listo',
+      hopPointId: 'hop-palermo',
+    });
+  });
+  it('al rescatar el texto respeta las comillas escapadas', () => {
+    expect(parseModelReply('{"text": "Tu casillero es el \\"A12\nTe esperamos", "hopPointId": null}')).toEqual({
+      text: 'Tu casillero es el "A12\nTe esperamos',
+      hopPointId: null,
+    });
+  });
+  it('nunca manda JSON crudo al cliente: si no puede rescatar el texto, lanza', () => {
+    expect(() => parseModelReply('{"text": 1}')).toThrow(InvalidModelReplyError);
   });
 });
 
 describe('toAgentReply', () => {
+  const canShowPin = async () => true;
   it('arma la ubicación desde DynamoDB, nunca desde el modelo', async () => {
-    expect(await toAgentReply({ text: 'Listo', hopPointId: 'hop-palermo' }, { getHopPoint })).toEqual({
+    expect(await toAgentReply({ text: 'Listo', hopPointId: 'hop-palermo' }, { getHopPoint, canShowPin })).toEqual({
       text: 'Listo',
       location: { lat: -34.5885, lng: -58.4106, name: 'Punto HOP Palermo', address: 'Av. Santa Fe 3253, CABA' },
     });
   });
   it('un hopPointId desconocido o null no produce pin', async () => {
-    expect((await toAgentReply({ text: 'x', hopPointId: 'hop-falso' }, { getHopPoint })).location).toBeNull();
-    expect((await toAgentReply({ text: 'x', hopPointId: null }, { getHopPoint })).location).toBeNull();
+    expect((await toAgentReply({ text: 'x', hopPointId: 'hop-falso' }, { getHopPoint, canShowPin })).location).toBeNull();
+    expect((await toAgentReply({ text: 'x', hopPointId: null }, { getHopPoint, canShowPin })).location).toBeNull();
+  });
+  it('no manda el pin si ningún paquete del cliente está listo en ese punto', async () => {
+    const reply = await toAgentReply({ text: 'x', hopPointId: 'hop-palermo' }, { getHopPoint, canShowPin: async () => false });
+    expect(reply.location).toBeNull();
+  });
+});
+
+describe('hasPackageReadyAt', () => {
+  it('es true solo si un paquete del teléfono está READY_AT_HOP en ese punto', async () => {
+    const repos = {
+      getPackagesByPhone: vi.fn(async () => [
+        { trackingId: 'HOP-1', phone: PHONE, customerName: 'Ana', status: 'IN_TRANSIT', hopPointId: 'hop-belgrano', updatedAt: 'x' },
+        { trackingId: 'HOP-2', phone: PHONE, customerName: 'Ana', status: 'READY_AT_HOP', hopPointId: 'hop-palermo', updatedAt: 'x' },
+      ]),
+    } as unknown as Repos;
+    expect(await hasPackageReadyAt(repos, PHONE, 'hop-palermo')).toBe(true);
+    expect(await hasPackageReadyAt(repos, PHONE, 'hop-belgrano')).toBe(false);
+    expect(repos.getPackagesByPhone).toHaveBeenCalledWith(PHONE, expect.any(Number));
+  });
+});
+
+describe('createHopAgent', () => {
+  it('pide effort low: Sonnet 5.5 piensa por defecto y en un chat de seguimiento eso solo suma latencia', () => {
+    const agent = createHopAgent({ repos: {} as Repos, phone: PHONE, region: 'us-east-1' });
+    expect((agent.model as BedrockModel).getConfig().additionalRequestFields).toEqual({ output_config: { effort: 'low' } });
   });
 });
 
 describe('askAgent', () => {
   it('invoca con límites y timeout y devuelve la respuesta del contrato', async () => {
     const agent = fakeAgent('endTurn', '{"text":"Listo en Palermo","hopPointId":"hop-palermo"}');
-    const reply = await askAgent(agent, 'hola', { getHopPoint });
+    const reply = await askAgent(agent, 'hola', { getHopPoint, canShowPin: async () => true });
     expect(reply.text).toBe('Listo en Palermo');
     expect(reply.location?.name).toBe('Punto HOP Palermo');
     const [text, options] = agent.invoke.mock.calls[0] as unknown as [string, { limits: { turns: number }; cancelSignal: AbortSignal }];
     expect(text).toBe('hola');
     expect(options.limits).toEqual({ turns: MAX_TURNS });
     expect(options.cancelSignal).toBeInstanceOf(AbortSignal);
-    expect(INVOKE_TIMEOUT_MS).toBeLessThan(60_000);
+    // Por debajo de los 40 s del cliente en la Lambda inbound: la disculpa llega antes de que corte.
+    expect(INVOKE_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
   });
   it('si el agente no termina el turno (max_tokens, cancelación) lanza en vez de devolver basura', async () => {
-    await expect(askAgent(fakeAgent('maxTokens', 'parcial'), 'hola', { getHopPoint })).rejects.toThrow(AgentStoppedError);
-    await expect(askAgent(fakeAgent('cancelled', 'Cancelled by user'), 'hola', { getHopPoint })).rejects.toThrow(AgentStoppedError);
-    await expect(askAgent(fakeAgent('limitTurns', 'parcial'), 'hola', { getHopPoint })).rejects.toThrow(AgentStoppedError);
+    await expect(askAgent(fakeAgent('maxTokens', 'parcial'), 'hola', { getHopPoint, canShowPin: async () => true })).rejects.toThrow(AgentStoppedError);
+    await expect(askAgent(fakeAgent('cancelled', 'Cancelled by user'), 'hola', { getHopPoint, canShowPin: async () => true })).rejects.toThrow(AgentStoppedError);
+    await expect(askAgent(fakeAgent('limitTurns', 'parcial'), 'hola', { getHopPoint, canShowPin: async () => true })).rejects.toThrow(AgentStoppedError);
   });
 });
 
@@ -112,6 +165,29 @@ describe('createInvocationHandler', () => {
     const second = await handle({ phone: PHONE, text: 'de nuevo' }, { sessionId: 's3', log });
     expect(second.text).toBe('ok');
     expect(agentFactory).toHaveBeenCalledTimes(2);
+  });
+
+  it('le pasa al agente el teléfono de la sesión y el tiempo que le queda', async () => {
+    const ask = vi.fn(async () => ({ text: 'ok', location: null }));
+    const handle = createInvocationHandler({ repos, agentFactory: () => ({ invoke: vi.fn() }), ask, now: () => 1_000 });
+    await handle({ phone: PHONE, text: 'hola' }, { sessionId: 's5' });
+    expect(ask).toHaveBeenCalledWith(expect.anything(), 'hola', { phone: PHONE, timeoutMs: INVOKE_TIMEOUT_MS });
+  });
+
+  it('si un mensaje esperó en la cola más que el presupuesto, responde la disculpa sin invocar al modelo', async () => {
+    let clock = 0;
+    const ask = vi.fn(async () => {
+      clock += INVOKE_TIMEOUT_MS - MIN_AGENT_TIME_MS + 1; // el primer mensaje se come casi todo el tiempo
+      return { text: 'ok', location: null };
+    });
+    const handle = createInvocationHandler({ repos, agentFactory: () => ({ invoke: vi.fn() }), ask, now: () => clock });
+    const [first, second] = await Promise.all([
+      handle({ phone: PHONE, text: 'hola' }, { sessionId: 's6' }),
+      handle({ phone: PHONE, text: '¿dónde está mi paquete?' }, { sessionId: 's6' }),
+    ]);
+    expect(first.text).toBe('ok');
+    expect(second).toEqual(FALLBACK_REPLY);
+    expect(ask).toHaveBeenCalledTimes(1);
   });
 
   it('el log nunca lleva el teléfono completo', async () => {
