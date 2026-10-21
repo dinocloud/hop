@@ -33,6 +33,8 @@ Lo armó Lean en el setup de WhatsApp y acá solo se lee:
 
 El stack usa `aws-phone-number-id` (el ID de AWS, `phone-number-id-...`) como origen de los envíos. El `phone-number-id` numérico es el de Meta y no se usa en la API de AWS.
 
+La plantilla `paquete_listo` tampoco la crea el stack: se crea una sola vez por API, ver [Plantilla de WhatsApp](#plantilla-de-whatsapp-paquete_listo).
+
 ### Modelo de datos (DynamoDB)
 
 | Tabla | Clave | Atributos |
@@ -54,6 +56,7 @@ src/lib/             tipos, logger, clientes compartidos
 src/lambdas/         package-status-hook · inbound-router
 agent/               agente para AgentCore Runtime (se agrega en su PR)
 scripts/             seed.ts y utilidades de verificación
+templates/           paquete_listo.json (definición de la plantilla de WhatsApp)
 test/                vitest: infra (assertions) + unit
 ```
 
@@ -123,6 +126,46 @@ Prueba manual (el número va por argumento, nunca al repo):
 AWS_PROFILE=dino-dev npm run send:test -- +5491112345678 template paquete_listo "Ana" "Punto HOP Palermo" "5"
 AWS_PROFILE=dino-dev npm run send:test -- +5491112345678 text "hola desde HOP"     # requiere ventana abierta
 AWS_PROFILE=dino-dev npm run send:test -- +5491112345678 location                  # requiere ventana abierta
+```
+
+## Plantilla de WhatsApp (`paquete_listo`)
+
+El aviso proactivo lo inicia la empresa, así que tiene que ser una plantilla aprobada por Meta. La definición está en `templates/paquete_listo.json`.
+
+| Campo | Valor |
+|---|---|
+| Nombre | `paquete_listo` (contexto `hop:templateName`) |
+| Idioma | `es_AR` (contexto `hop:templateLanguage`) |
+| Categoría | `UTILITY` |
+| Componentes | Solo cuerpo (`BODY`), sin header ni botones |
+
+> Hola {{1}}, tu paquete ya está en {{2}}. Tenés {{3}} días para retirarlo. Si necesitás más tiempo, cambiar de punto o reprogramar, respondé este mensaje.
+
+Las variables son posicionales y el hook las manda en este orden:
+
+| Variable | Contenido | Origen |
+|---|---|---|
+| `{{1}}` | Nombre del cliente | `customerName` del paquete |
+| `{{2}}` | Nombre del Punto HOP | `name` del Punto HOP |
+| `{{3}}` | Días para retirar | `deadlineDays` del body del hook |
+
+Si cambian el texto o el orden de las variables, hay que crear y aprobar una plantilla nueva y ajustar la llamada a `sendTemplate` en `src/lambdas/package-status-hook/handler.ts`. Si cambian el nombre o el idioma, también hay que actualizar el contexto en `cdk.json`.
+
+Para crear la plantilla (en `dino-dev` ya está creada; esto sirve para recrearla):
+
+```bash
+export AWS_PROFILE=dino-dev AWS_REGION=us-east-1
+WABA_ID=$(aws socialmessaging list-linked-whatsapp-business-accounts --query 'linkedAccounts[0].id' --output text)
+aws socialmessaging create-whatsapp-message-template --id "$WABA_ID" --template-definition fileb://templates/paquete_listo.json
+```
+
+`--id` es el ID de AWS de la WABA (`waba-...`); el `waba-id` de SSM es el numérico de Meta. `fileb://` manda el archivo tal cual; si se pasa inline, AWS CLI v2 lo interpreta como base64.
+
+Para ver el estado (pasa de `PENDING` a `APPROVED` y puede tardar de minutos a horas):
+
+```bash
+aws socialmessaging list-whatsapp-message-templates --id "$WABA_ID" \
+  --query "templates[?templateName=='paquete_listo'].templateStatus" --output text
 ```
 
 ## Hook de estado del paquete

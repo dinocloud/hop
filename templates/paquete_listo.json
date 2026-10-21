@@ -1,0 +1,14 @@
+{
+  "name": "paquete_listo",
+  "language": "es_AR",
+  "category": "UTILITY",
+  "components": [
+    {
+      "type": "BODY",
+      "text": "Hola {{1}}, tu paquete ya está en {{2}}. Tenés {{3}} días para retirarlo. Si necesitás más tiempo, cambiar de punto o reprogramar, respondé este mensaje.",
+      "example": {
+        "body_text": [["Ana", "Punto Palermo", "5"]]
+      }
+    }
+  ]
+}
