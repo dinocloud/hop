@@ -52,7 +52,10 @@ export class ConcurrentUpdateError extends Error {
 }
 
 /** Lease de procesamiento de un mensaje entrante. Más largo que el timeout de la Lambda (60 s). */
-export const MESSAGE_LEASE_SECONDS = 120;
+export const MESSAGE_LEASE_SECONDS = 70;
+
+/** Resultado de reclamar un mensaje entrante. */
+export type ClaimResult = 'claimed' | 'done' | 'in_progress';
 /** Los ítems de dedupe se borran solos a los 7 días. */
 export const MESSAGE_TTL_SECONDS = 7 * 24 * 60 * 60;
 
@@ -225,28 +228,39 @@ export function createRepos(deps: ReposDeps = {}) {
    */
   async function touchInbound(rawPhone: string, inboundAt: Date): Promise<Conversation> {
     const phone = normalizePhone(rawPhone);
-    const res = await doc.send(
-      new UpdateCommand({
-        TableName: tables.conversations,
-        Key: { phone },
-        UpdateExpression: 'SET #lastInboundAt = :inboundAt, #sessionId = if_not_exists(#sessionId, :sessionId)',
-        ExpressionAttributeNames: { '#lastInboundAt': 'lastInboundAt', '#sessionId': 'sessionId' },
-        ExpressionAttributeValues: { ':inboundAt': inboundAt.toISOString(), ':sessionId': newSessionId() },
-        ReturnValues: 'ALL_NEW',
-      }),
-    );
-    return res.Attributes as Conversation;
+    try {
+      const res = await doc.send(
+        new UpdateCommand({
+          TableName: tables.conversations,
+          Key: { phone },
+          UpdateExpression: 'SET #lastInboundAt = :inboundAt, #sessionId = if_not_exists(#sessionId, :sessionId)',
+          // La ventana nunca retrocede: un reintento o un redrive viejo no pisa un mensaje más nuevo.
+          ConditionExpression: 'attribute_not_exists(#lastInboundAt) OR #lastInboundAt <= :inboundAt',
+          ExpressionAttributeNames: { '#lastInboundAt': 'lastInboundAt', '#sessionId': 'sessionId' },
+          ExpressionAttributeValues: { ':inboundAt': inboundAt.toISOString(), ':sessionId': newSessionId() },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return res.Attributes as Conversation;
+    } catch (err) {
+      if (!isConditionalCheckFailed(err)) throw err;
+      const current = await getConversation(phone);
+      if (!current) throw err;
+      return current;
+    }
   }
 
   /**
    * Reclama un mensaje entrante para procesarlo exactamente una vez.
-   * - `true`: nadie lo procesó, o un intento anterior quedó en PROCESSING con el lease vencido
-   *   (la Lambda falló a mitad de camino): hay que procesarlo.
-   * - `false`: ya está DONE o lo está procesando otra invocación ahora mismo: descartar.
-   * Siempre terminar con `completeMessage` si salió bien; si falla, no marcar nada y dejar
-   * que el reintento lo retome cuando venza el lease.
+   * - `'claimed'`: nadie lo procesó, o un intento anterior quedó en PROCESSING con el lease
+   *   vencido (la Lambda falló a mitad de camino): hay que procesarlo.
+   * - `'done'`: ya se procesó: descartar como duplicado.
+   * - `'in_progress'`: otra invocación lo tiene con el lease vivo (o murió sin liberarlo):
+   *   relanzar para que Lambda reintente más tarde, nunca descartarlo.
+   * Siempre terminar con `completeMessage` si salió bien, o `releaseMessage` si falló antes de
+   * enviar algo, para que el reintento lo retome sin esperar a que venza el lease.
    */
-  async function claimMessage(messageId: string, now = new Date()): Promise<boolean> {
+  async function claimMessage(messageId: string, now = new Date()): Promise<ClaimResult> {
     const nowSec = Math.floor(now.getTime() / 1000);
     try {
       await doc.send(
@@ -270,9 +284,35 @@ export function createRepos(deps: ReposDeps = {}) {
           },
         }),
       );
-      return true;
+      return 'claimed';
     } catch (err) {
-      if (isConditionalCheckFailed(err)) return false;
+      if (!isConditionalCheckFailed(err)) throw err;
+      // DONE (duplicado real) o PROCESSING con lease vivo (otra invocación murió o sigue): no es lo mismo.
+      const res = await doc.send(new GetCommand({ TableName: tables.inboundMessages, Key: { messageId }, ConsistentRead: true }));
+      const item = res.Item as InboundMessage | undefined;
+      return item?.status === 'DONE' ? 'done' : 'in_progress';
+    }
+  }
+
+  /** Libera el lease de un mensaje que falló a mitad de camino, para que el reintento lo retome enseguida. */
+  async function releaseMessage(messageId: string, now = new Date()): Promise<void> {
+    try {
+      await doc.send(
+        new UpdateCommand({
+          TableName: tables.inboundMessages,
+          Key: { messageId },
+          UpdateExpression: 'SET #leaseUntil = :zero, #updatedAt = :updatedAt',
+          ConditionExpression: '#status = :processing',
+          ExpressionAttributeNames: { '#leaseUntil': 'leaseUntil', '#updatedAt': 'updatedAt', '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':zero': 0,
+            ':updatedAt': now.toISOString(),
+            ':processing': 'PROCESSING' satisfies InboundMessage['status'],
+          },
+        }),
+      );
+    } catch (err) {
+      if (isConditionalCheckFailed(err)) return; // ya está DONE: nada que liberar
       throw err;
     }
   }
@@ -298,6 +338,7 @@ export function createRepos(deps: ReposDeps = {}) {
     getConversation,
     touchInbound,
     claimMessage,
+    releaseMessage,
     completeMessage,
     tables,
   };

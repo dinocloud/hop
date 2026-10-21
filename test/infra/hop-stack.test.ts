@@ -211,7 +211,7 @@ describe('HopStack', () => {
     const router = allStatements(template).find((s) => JSON.stringify(s.Resource).includes('ConversationsTable'));
     expect(router?.Action).toEqual(['dynamodb:GetItem', 'dynamodb:UpdateItem']);
     const dedupe = allStatements(template).find((s) => JSON.stringify(s.Resource).includes('InboundMessagesTable'));
-    expect(dedupe?.Action).toEqual('dynamodb:UpdateItem');
+    expect(dedupe?.Action).toEqual(['dynamodb:GetItem', 'dynamodb:UpdateItem']);
     const forbidden = allStatements(template).filter((s) => {
       const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
       return actions.some((a) => ['dynamodb:DeleteItem', 'dynamodb:Scan', 'dynamodb:BatchWriteItem', 'dynamodb:*'].includes(a));
@@ -272,6 +272,20 @@ describe('HopStack', () => {
     });
     template.hasResourceProperties('AWS::ApiGateway::UsagePlan', { UsagePlanName: 'hop-hackathon-usage-plan' });
     template.resourceCountIs('AWS::ApiGateway::ApiKey', 1);
+  });
+
+  it('alarma los caminos en los que un cliente se queda sin respuesta', () => {
+    const alarms = Object.values(template.findResources('AWS::CloudWatch::Alarm') as Record<string, { Properties: { AlarmName: string } }>).map(
+      (a) => a.Properties.AlarmName,
+    );
+    expect(alarms.sort()).toEqual([
+      'hop-hackathon-agent-failed',
+      'hop-hackathon-inbound-dlq-not-empty',
+      'hop-hackathon-inbound-parse-error',
+      'hop-hackathon-reply-delivery-failed',
+      'hop-hackathon-reply-failed',
+      'hop-hackathon-template-send-failed',
+    ]);
   });
 
   it('gestiona el log group de ejecución de API Gateway con retención', () => {

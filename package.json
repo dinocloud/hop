@@ -19,9 +19,11 @@
     "seed": "tsx scripts/seed.ts",
     "cdk": "cdk",
     "send:test": "tsx scripts/send-test.ts",
-    "smoke:agent": "node scripts/smoke-agent.mjs"
+    "smoke:agent": "node scripts/smoke-agent.mjs",
+    "publish:inbound": "tsx scripts/publish-inbound.ts"
   },
   "devDependencies": {
+    "@aws-sdk/client-sns": "^3.1152.0",
     "@aws-sdk/client-ssm": "^3.1152.0",
     "@types/aws-lambda": "^8.10.161",
     "@types/node": "^22.19.0",

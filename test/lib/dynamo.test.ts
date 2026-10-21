@@ -122,20 +122,27 @@ describe('repos', () => {
     expectExpressionsConsistent(failed!);
   });
 
-  it('touchInbound renueva la ventana con la fecha del mensaje y asigna sessionId si falta', async () => {
+  it('touchInbound renueva la ventana con la fecha del mensaje, asigna sessionId si falta y nunca retrocede', async () => {
     ddb.on(UpdateCommand).resolves({ Attributes: { phone: PHONE, lastInboundAt: NOW.toISOString(), sessionId: 'abc' } });
     const conversation = await repos.touchInbound('+54 9 11 1234-5678', NOW);
     expect(conversation.sessionId).toBe('abc');
     const input = ddb.commandCalls(UpdateCommand)[0]!.args[0].input;
     expect(input.Key).toEqual({ phone: PHONE });
     expect(input.UpdateExpression).toContain('if_not_exists(#sessionId, :sessionId)');
+    expect(input.ConditionExpression).toBe('attribute_not_exists(#lastInboundAt) OR #lastInboundAt <= :inboundAt');
     expect(input.ExpressionAttributeValues?.[':inboundAt']).toBe(NOW.toISOString());
     expectExpressionsConsistent(input);
+
+    // Mensaje más viejo que el último registrado: no se pisa, se devuelve la conversación actual.
+    ddb.on(UpdateCommand).rejects(conditionalCheckFailed());
+    ddb.on(GetCommand, { TableName: 'cv' }).resolves({ Item: { phone: PHONE, lastInboundAt: '2026-10-17T13:00:00Z', sessionId: 'abc' } });
+    const kept = await repos.touchInbound(PHONE, new Date('2026-10-17T11:00:00Z'));
+    expect(kept.lastInboundAt).toBe('2026-10-17T13:00:00Z');
   });
 
-  it('claimMessage procesa cada mensaje una sola vez y retoma los leases vencidos', async () => {
+  it('claimMessage distingue nuevo, hecho y en proceso con lease vivo', async () => {
     ddb.on(UpdateCommand).resolves({});
-    expect(await repos.claimMessage('wamid.A', NOW)).toBe(true);
+    expect(await repos.claimMessage('wamid.A', NOW)).toBe('claimed');
     const input = ddb.commandCalls(UpdateCommand)[0]!.args[0].input;
     expect(input.TableName).toBe('im');
     expect(input.ConditionExpression).toBe('attribute_not_exists(messageId) OR (#status = :processing AND #leaseUntil < :now)');
@@ -146,10 +153,26 @@ describe('repos', () => {
       ':now': nowSec,
     });
     expectExpressionsConsistent(input);
+    expect(MESSAGE_LEASE_SECONDS).toBeGreaterThan(60);
 
-    // Reintento mientras otro intento sigue en PROCESSING o ya está DONE: condición fallida → descartar.
     ddb.on(UpdateCommand).rejects(conditionalCheckFailed());
-    expect(await repos.claimMessage('wamid.A', NOW)).toBe(false);
+    ddb.on(GetCommand, { TableName: 'im' }).resolves({ Item: { messageId: 'wamid.A', status: 'DONE' } });
+    expect(await repos.claimMessage('wamid.A', NOW)).toBe('done');
+    ddb.on(GetCommand, { TableName: 'im' }).resolves({ Item: { messageId: 'wamid.A', status: 'PROCESSING', leaseUntil: nowSec + 50 } });
+    expect(await repos.claimMessage('wamid.A', NOW)).toBe('in_progress');
+    const get = ddb.commandCalls(GetCommand).at(-1)!.args[0].input;
+    expect(get).toMatchObject({ TableName: 'im', ConsistentRead: true });
+  });
+
+  it('releaseMessage vence el lease solo si sigue en PROCESSING', async () => {
+    ddb.on(UpdateCommand).resolves({});
+    await repos.releaseMessage('wamid.A', NOW);
+    const input = ddb.commandCalls(UpdateCommand)[0]!.args[0].input;
+    expect(input.ConditionExpression).toBe('#status = :processing');
+    expect(input.ExpressionAttributeValues?.[':zero']).toBe(0);
+    expectExpressionsConsistent(input);
+    ddb.on(UpdateCommand).rejects(conditionalCheckFailed());
+    await expect(repos.releaseMessage('wamid.A', NOW)).resolves.toBeUndefined();
   });
 
   it('completeMessage marca DONE', async () => {

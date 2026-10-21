@@ -195,6 +195,27 @@ aws bedrock-agentcore invoke-agent-runtime --region us-east-1 \
 
 CloudFormation acepta `NODE_22` en `CodeConfiguration.Runtime` con un entry point `.js` en la raíz del zip, que es lo que arma el bundle único de esbuild.
 
+## Mensajes entrantes (`src/lambdas/inbound-router`)
+
+SNS (End User Messaging Social) → `inbound-router` → AgentCore → respuesta por WhatsApp.
+
+- **Evento**: el `Message` de SNS trae `whatsAppWebhookEntry`, el `entry` de la Cloud API de Meta como string JSON. Se procesan los mensajes de texto y los taps en botones (respuesta rápida de una plantilla, botones y listas interactivas), que le llegan al agente como texto. A un audio, imagen, video, documento, sticker, ubicación o contacto se le contesta un texto fijo ("por ahora solo puedo leer mensajes de texto", `InboundUnsupported`); las reacciones, los mensajes de sistema y los textos vacíos se ignoran (`InboundIgnored`). Los `statuses` se cuentan en `InboundStatus` y un `failed` (por ejemplo 131047, fuera de ventana) se loguea con sus códigos y dispara `ReplyDeliveryFailed`. Elementos con forma inesperada van a `InboundInvalid` sin bloquear al resto; un sobre con formato desconocido va a `InboundParseError`. El `from` viene sin `+` y se normaliza con `fromWaId`. Parser tolerante por elemento en `src/lib/inbound-event.ts`.
+- **Exactamente una vez**: `claimMessage(messageId)` con lease de 70 s (más que el timeout de la Lambda). `done` se descarta como duplicado; `in_progress` (una invocación anterior murió con el lease vivo) se relanza para que Lambda lo reintente más tarde en vez de perderlo; `completeMessage` al terminar; `releaseMessage` si falla antes de enviar algo.
+- **Nunca dos respuestas**: una vez que salió algo por WhatsApp, un fallo posterior no relanza (log + `ReplyFailed`). Solo se reintenta si todavía no salió nada, el error es transitorio y no ambiguo (un timeout del envío puede haber llegado igual).
+- **Conversación**: `touchInbound(phone, fechaDelMensaje)` abre la ventana de 24 h (nunca retrocede) y asigna el `sessionId` que se le pasa a AgentCore (así el agente conserva el hilo; el runtime procesa de a un mensaje por sesión). Un mensaje más viejo que la ventana (redrive tardío) no se contesta: `InboundStale`.
+- **Respuesta**: `sendText` con el texto del agente y, si devolvió `location`, `sendLocation` con el pin del Punto HOP. Si el agente falla o responde en modo degradado, se manda el texto de disculpa (`AgentFailed`).
+- **AgentCore**: el 409 `RetryableConflictException` aparece cuando la sesión se está levantando (dos mensajes seguidos en el primer contacto, o después de 15 min sin actividad). Ese error y el throttling se reintentan con esperas de 250, 500 y 1000 ms, dentro del mismo timeout: AgentCore no procesó el pedido, así que no se duplica nada.
+- **Tiempo**: Lambda 60 s. Cada mensaje recibe como máximo 40 s para el agente, acotado por lo que queda de la Lambda menos 12 s de margen; si quedan menos de 15 s no se arranca otro mensaje y se relanza para el reintento.
+- **Mensajes seguidos**: cada mensaje dispara su propia Lambda. El runtime los encola por sesión, pero no garantiza el orden de llegada, y la espera en la cola cuenta contra el tiempo del segundo mensaje: si no alcanza, ese mensaje recibe la disculpa. Para ordenarlos de verdad hace falta SQS FIFO con `MessageGroupId=phone` (pendiente).
+- **Alarmas**: `InboundParseError`, `ReplyFailed`, `ReplyDeliveryFailed` y `AgentFailed` > 0 en 5 minutos, además de la DLQ.
+
+Probar sin teléfono (el número indicado recibe la respuesta real). Requiere `sns:Publish` sobre el topic (y `kms:GenerateDataKey` si el topic estuviera cifrado con una CMK). Ojo: el evento sintético abre la ventana local para ese número; si en Meta nunca escribió, el envío lo acepta AWS pero Meta lo rechaza de forma asíncrona (llega como `status: failed` con 131047 y dispara `ReplyDeliveryFailed`).
+
+```bash
+AWS_PROFILE=dino-dev npm run publish:inbound -- +5491112345678 "¿dónde está mi paquete?"
+aws logs tail /aws/lambda/hop-hackathon-inbound-router --since 5m --follow
+```
+
 ## Datos de prueba
 
 ```bash

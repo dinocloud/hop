@@ -227,7 +227,8 @@ export class HopStack extends cdk.Stack {
     this.hopPointsTable.grant(this.packageStatusHookFn, 'dynamodb:GetItem');
     // Router: la conversación (ventana de 24 h, sessionId) y el dedupe por mensaje. Los paquetes los lee el agente.
     this.conversationsTable.grant(this.inboundRouterFn, 'dynamodb:GetItem', 'dynamodb:UpdateItem');
-    this.inboundMessagesTable.grant(this.inboundRouterFn, 'dynamodb:UpdateItem');
+    // UpdateItem condicional para el claim; GetItem para distinguir DONE de "en proceso" cuando el claim falla.
+    this.inboundMessagesTable.grant(this.inboundRouterFn, 'dynamodb:GetItem', 'dynamodb:UpdateItem');
 
     for (const fn of [this.packageStatusHookFn, this.inboundRouterFn]) {
       fn.addToRolePolicy(
@@ -465,6 +466,30 @@ export class HopStack extends cdk.Stack {
     });
 
     // Un aviso "paquete listo" que no sale es un cliente sin notificación: alarma visible.
+    // Caminos en los que un cliente se queda sin respuesta (o sin respuesta útil): alarma visible.
+    for (const [id, metricName, description] of [
+      ['InboundParseErrorAlarm', 'InboundParseError', 'Eventos de WhatsApp con formato desconocido: se están descartando mensajes'],
+      ['ReplyFailedAlarm', 'ReplyFailed', 'No se pudo enviar la respuesta a un cliente por WhatsApp'],
+      ['ReplyDeliveryFailedAlarm', 'ReplyDeliveryFailed', 'Meta no pudo entregar una respuesta (status failed)'],
+      ['AgentFailedAlarm', 'AgentFailed', 'El agente de AgentCore falló y se respondió con la disculpa genérica'],
+    ] as const) {
+      new cloudwatch.Alarm(this, id, {
+        alarmName: `${PREFIX}-${metricName.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()}`,
+        alarmDescription: description,
+        metric: new cloudwatch.Metric({
+          namespace: METRICS_NAMESPACE,
+          metricName,
+          dimensionsMap: { service: 'inbound-router' },
+          statistic: 'Sum',
+          period: cdk.Duration.minutes(5),
+        }),
+        threshold: 0,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    }
+
     new cloudwatch.Alarm(this, 'TemplateSendFailedAlarm', {
       alarmName: `${PREFIX}-template-send-failed`,
       alarmDescription: 'Falló el envío de la plantilla "paquete listo" (ver logs de package-status-hook)',
