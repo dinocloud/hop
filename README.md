@@ -81,6 +81,8 @@ npm run synth       # cdk synth --strict con cdk-nag (sin credenciales)
 
 Sobre el rol: su trust acepta **únicamente** tokens de push a `main` del repo `dinocloud/hop` (ni environments, ni PRs, ni otras ramas) y solo puede asumir los roles de bootstrap de CDK de la región. Ojo: el rol de ejecución de CloudFormation del bootstrap (`cfn-exec-role`) tiene AdministratorAccess en la cuenta, como en cualquier bootstrap por defecto, así que **quien pueda mergear a `main` puede desplegar cualquier cosa en la cuenta compartida**. Por eso `main` tiene que estar protegida en GitHub: PR obligatorio con al menos una revisión y sin push directo.
 
+El repo usa *immutable subjects* de OIDC (los repos nuevos de GitHub vienen así): el `sub` del token es `repo:dinocloud@20630168/hop@1417116948:ref:refs/heads/main`, no `repo:dinocloud/hop:...`. El prefijo está en el contexto `hop:githubSubjectPrefix` de `cdk.json`. Se puede consultar con `gh api repos/dinocloud/hop/actions/oidc/customization/sub` (campo `sub_claim_prefix`).
+
 **Setup único** (una sola vez, lo hace alguien con acceso a la cuenta):
 
 1. Desplegar el rol OIDC. Es el único deploy manual del proyecto; reutiliza el proveedor OIDC de GitHub que ya existe en la cuenta.

@@ -12,6 +12,7 @@ const account = requireContext('hop:account');
 const region = requireContext('hop:region');
 const stage = requireContext('hop:stage');
 const githubRepo = requireContext('hop:githubRepo');
+const githubSubjectPrefix = requireContext('hop:githubSubjectPrefix');
 const templateName = requireContext('hop:templateName');
 const templateLanguage = requireContext('hop:templateLanguage');
 
@@ -25,6 +26,7 @@ new CiStack(app, 'HopHackathonCi', {
   stackName: 'hop-hackathon-ci',
   description: 'HOP hackathon - rol OIDC para que GitHub Actions despliegue con CDK',
   githubRepo,
+  githubSubjectPrefix,
   deployBranches: ['main'],
 });
 

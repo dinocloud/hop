@@ -9,6 +9,7 @@
     "hop:region": "us-east-1",
     "hop:stage": "dev",
     "hop:githubRepo": "dinocloud/hop",
+    "hop:githubSubjectPrefix": "repo:dinocloud@20630168/hop@1417116948",
     "hop:templateName": "paquete_listo",
     "hop:templateLanguage": "es_AR",
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
