@@ -16,7 +16,9 @@ export { InvalidPhoneError, normalizePhone } from './phone.js';
  *   Fuera de la ventana solo se puede enviar una plantilla aprobada.
  */
 
-export const DEFAULT_META_API_VERSION = 'v20.0';
+/** AWS acepta la v20 en adelante; Meta retira cada versión unos dos años después de publicarla. */
+export const DEFAULT_META_API_VERSION = 'v23.0';
+const META_API_VERSION_PATTERN = /^v\d+\.\d+$/;
 export const DEFAULT_TEMPLATE_LANGUAGE = 'es_AR';
 export const WINDOW_HOURS = 24;
 /** Margen de seguridad: la ventana local se cierra 5 min antes que la de Meta (reintentos, relojes). */
@@ -60,7 +62,7 @@ export interface WhatsAppSenderDeps {
   originationPhoneNumberId?: string;
   /** Idioma de la plantilla. Por defecto env `TEMPLATE_LANGUAGE` o `es_AR`. */
   templateLanguage?: string;
-  /** Versión de la Cloud API. Por defecto env `META_API_VERSION` o `v20.0`. */
+  /** Versión de la Cloud API (`vN.N`). Por defecto env `META_API_VERSION` o `DEFAULT_META_API_VERSION`. */
   metaApiVersion?: string;
   /** Lee la conversación para evaluar la ventana de 24 h. */
   getConversation: (phone: string) => Promise<Conversation | undefined>;
@@ -107,6 +109,9 @@ export function createWhatsAppSender(deps: WhatsAppSenderDeps) {
   const originationPhoneNumberId = deps.originationPhoneNumberId ?? requireEnv('ORIGINATION_PHONE_NUMBER_ID');
   const templateLanguage = deps.templateLanguage ?? optionalEnv('TEMPLATE_LANGUAGE', DEFAULT_TEMPLATE_LANGUAGE);
   const metaApiVersion = deps.metaApiVersion ?? optionalEnv('META_API_VERSION', DEFAULT_META_API_VERSION);
+  if (!META_API_VERSION_PATTERN.test(metaApiVersion)) {
+    throw new Error(`META_API_VERSION inválida: "${metaApiVersion}" (formato vN.N, ej. ${DEFAULT_META_API_VERSION})`);
+  }
   const now = deps.now ?? (() => new Date());
 
   async function send(body: Record<string, unknown>): Promise<string | undefined> {

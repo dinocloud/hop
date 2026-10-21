@@ -8,6 +8,7 @@ describe('CiStack', () => {
   const stack = new CiStack(app, 'HopHackathonCi', {
     env: { account: '123456789012', region: 'us-east-1' },
     githubRepo: 'dinocloud/hop',
+    githubSubjectPrefix: 'repo:dinocloud@20630168/hop@1417116948',
     deployBranches: ['main'],
   });
   const template = Template.fromStack(stack);
@@ -17,7 +18,7 @@ describe('CiStack', () => {
     template.resourceCountIs('AWS::IAM::OIDCProvider', 0);
   });
 
-  it('acepta solo tokens de push a main del repo (StringEquals, sin environments ni PRs)', () => {
+  it('acepta solo tokens de push a main del repo con el subject inmutable (StringEquals, sin environments ni PRs)', () => {
     template.hasResourceProperties('AWS::IAM::Role', {
       RoleName: 'hop-hackathon-github-deploy',
       MaxSessionDuration: 3600,
@@ -28,7 +29,7 @@ describe('CiStack', () => {
             Condition: {
               StringEquals: {
                 'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
-                'token.actions.githubusercontent.com:sub': ['repo:dinocloud/hop:ref:refs/heads/main'],
+                'token.actions.githubusercontent.com:sub': ['repo:dinocloud@20630168/hop@1417116948:ref:refs/heads/main'],
               },
             },
           }),
@@ -40,6 +41,18 @@ describe('CiStack', () => {
     expect(trust).not.toContain('environment:');
     expect(trust).not.toContain('pull_request');
     expect(trust).not.toContain('StringLike');
+  });
+
+  it('rechaza un prefijo de subject que no es el de un repo', () => {
+    expect(
+      () =>
+        new CiStack(new cdk.App(), 'BadPrefix', {
+          env: { account: '123456789012', region: 'us-east-1' },
+          githubRepo: 'dinocloud/hop',
+          githubSubjectPrefix: 'dinocloud/hop',
+          deployBranches: ['main'],
+        }),
+    ).toThrow(/githubSubjectPrefix/);
   });
 
   it('solo puede asumir los roles de bootstrap de CDK que usa el deploy (sin image-publishing)', () => {

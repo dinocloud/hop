@@ -21,6 +21,7 @@ function synth(): Template {
     stage: 'dev',
     templateName: 'paquete_listo',
     templateLanguage: 'es_AR',
+    metaApiVersion: 'v23.0',
   });
   return Template.fromStack(stack);
 }
@@ -42,6 +43,13 @@ function allStatements(template: Template): Statement[] {
 
 describe('HopStack', () => {
   const template = synth();
+
+  it('pasa la versión de la Cloud API de Meta del contexto a las dos Lambdas', () => {
+    const fns = template.findResources('AWS::Lambda::Function', {
+      Properties: { Environment: { Variables: { META_API_VERSION: 'v23.0' } } },
+    });
+    expect(Object.keys(fns)).toHaveLength(2);
+  });
 
   it('crea las tres tablas con PITR, on-demand y prefijo del proyecto', () => {
     template.resourceCountIs('AWS::DynamoDB::Table', 4);
