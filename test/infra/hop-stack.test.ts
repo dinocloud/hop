@@ -167,7 +167,7 @@ describe('HopStack', () => {
     });
   });
 
-  it('el rol del runtime tiene trust condicionado y acceso de solo lectura a las tablas que usa', () => {
+  it('el rol del runtime tiene trust condicionado y acceso acotado a las tablas que usa', () => {
     template.hasResourceProperties('AWS::IAM::Role', {
       RoleName: 'hop-hackathon-agent-runtime-role',
       AssumeRolePolicyDocument: {
@@ -189,7 +189,13 @@ describe('HopStack', () => {
       (s) => JSON.stringify(s.Resource).includes('PackagesTable') && Array.isArray(s.Action) && s.Action.includes('dynamodb:Query'),
     );
     expect(agentDynamo).toHaveLength(1);
-    expect(agentDynamo[0]?.Action).toEqual(['dynamodb:GetItem', 'dynamodb:Query']);
+    // UpdateItem para las tools de resolución (extender, cambiar de punto, reprogramar, devolver).
+    expect(agentDynamo[0]?.Action).toEqual(['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:UpdateItem']);
+    const agentHopPoints = allStatements(template).filter(
+      (s) => JSON.stringify(s.Resource).includes('HopPointsTable') && Array.isArray(s.Action) && s.Action.includes('dynamodb:Scan'),
+    );
+    expect(agentHopPoints).toHaveLength(1);
+    expect(agentHopPoints[0]?.Action).toEqual(['dynamodb:GetItem', 'dynamodb:Scan']);
   });
 
   it('la Lambda inbound puede invocar solo este runtime y recibe su ARN por env', () => {
@@ -214,9 +220,13 @@ describe('HopStack', () => {
     expect(router?.Action).toEqual(['dynamodb:GetItem', 'dynamodb:UpdateItem']);
     const dedupe = allStatements(template).find((s) => JSON.stringify(s.Resource).includes('InboundMessagesTable'));
     expect(dedupe?.Action).toEqual(['dynamodb:GetItem', 'dynamodb:UpdateItem']);
+    // Scan solo sobre la tabla de Puntos HOP (unos pocos ítems de referencia) para list_hop_points.
     const forbidden = allStatements(template).filter((s) => {
       const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
-      return actions.some((a) => ['dynamodb:DeleteItem', 'dynamodb:Scan', 'dynamodb:BatchWriteItem', 'dynamodb:*'].includes(a));
+      const onHopPoints = JSON.stringify(s.Resource).includes('HopPointsTable');
+      return actions.some(
+        (a) => ['dynamodb:DeleteItem', 'dynamodb:BatchWriteItem', 'dynamodb:*'].includes(a) || (a === 'dynamodb:Scan' && !onHopPoints),
+      );
     });
     expect(forbidden).toEqual([]);
   });

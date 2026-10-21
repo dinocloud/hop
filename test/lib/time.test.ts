@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calendarDaysUntilInBuenosAires, endOfDayInBuenosAires, formatDayInBuenosAires } from '../../src/lib/time.js';
+import { calendarDaysUntilInBuenosAires, endOfDayInBuenosAires, formatDayInBuenosAires, isoDateInBuenosAires } from '../../src/lib/time.js';
 
 describe('endOfDayInBuenosAires', () => {
   it('vence a las 23:59:59 de Buenos Aires del día N', () => {
@@ -31,5 +31,13 @@ describe('calendarDaysUntilInBuenosAires', () => {
     expect(calendarDaysUntilInBuenosAires(new Date('2026-10-22T02:59:59.000Z'), now)).toBe(0);
     expect(calendarDaysUntilInBuenosAires(new Date('2026-10-23T02:59:59.000Z'), now)).toBe(1);
     expect(calendarDaysUntilInBuenosAires(new Date('2026-10-20T15:00:00.000Z'), now)).toBe(-1);
+  });
+});
+
+describe('isoDateInBuenosAires', () => {
+  it('da la fecha YYYY-MM-DD de Buenos Aires', () => {
+    // 2026-10-18T02:00Z todavía son las 23:00 del 17/10 en BA
+    expect(isoDateInBuenosAires(new Date('2026-10-18T02:00:00Z'))).toBe('2026-10-17');
+    expect(isoDateInBuenosAires(new Date('2026-10-18T03:00:00Z'))).toBe('2026-10-18');
   });
 });

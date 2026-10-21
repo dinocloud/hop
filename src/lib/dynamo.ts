@@ -1,5 +1,12 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, QueryCommand, UpdateCommand, type UpdateCommandInput } from '@aws-sdk/lib-dynamodb';
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  QueryCommand,
+  ScanCommand,
+  UpdateCommand,
+  type UpdateCommandInput,
+} from '@aws-sdk/lib-dynamodb';
 import { randomUUID } from 'node:crypto';
 import { SDK_TIMEOUTS } from './aws-errors.js';
 import { normalizePhone } from './phone.js';
@@ -209,6 +216,12 @@ export function createRepos(deps: ReposDeps = {}) {
     return res.Item as HopPoint | undefined;
   }
 
+  /** Todos los Puntos HOP. La tabla tiene unos pocos ítems: un Scan de una página alcanza. */
+  async function listHopPoints(): Promise<HopPoint[]> {
+    const res = await doc.send(new ScanCommand({ TableName: tables.hopPoints }));
+    return (res.Items ?? []) as HopPoint[];
+  }
+
   /** Lectura fuertemente consistente: se consulta justo después de `touchInbound`. */
   async function getConversation(rawPhone: string): Promise<Conversation | undefined> {
     const phone = normalizePhone(rawPhone);
@@ -329,6 +342,7 @@ export function createRepos(deps: ReposDeps = {}) {
     updatePackageStatus,
     markReadyNotification,
     getHopPoint,
+    listHopPoints,
     getConversation,
     touchInbound,
     claimMessage,

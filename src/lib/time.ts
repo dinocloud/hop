@@ -44,6 +44,11 @@ export function formatDayInBuenosAires(date: Date): string {
   return `${WEEKDAYS[local.getUTCDay()]} ${local.getUTCDate()} de ${MONTHS[local.getUTCMonth()]}`;
 }
 
+/** La fecha de Buenos Aires en formato YYYY-MM-DD. */
+export function isoDateInBuenosAires(date: Date): string {
+  return buenosAiresClock(date).toISOString().slice(0, 10);
+}
+
 /** Días de calendario de Buenos Aires entre `now` y `date`: 0 = hoy, 1 = mañana, negativo = ya pasó. */
 export function calendarDaysUntilInBuenosAires(date: Date, now: Date): number {
   const dayNumber = (d: Date) => Math.floor(buenosAiresClock(d).getTime() / DAY_MS);

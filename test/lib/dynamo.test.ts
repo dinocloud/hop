@@ -1,5 +1,5 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, QueryCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ConcurrentUpdateError, MESSAGE_LEASE_SECONDS, PackageNotFoundError, createRepos, newSessionId } from '../../src/lib/dynamo.js';
@@ -47,6 +47,12 @@ describe('repos', () => {
     expect(input.ExpressionAttributeValues).toEqual({ ':phone': PHONE });
     expectExpressionsConsistent(input);
     await expect(repos.getPackagesByPhone('5491112345678')).rejects.toThrow(InvalidPhoneError);
+  });
+
+  it('listHopPoints devuelve todos los Puntos HOP con un Scan de la tabla', async () => {
+    ddb.on(ScanCommand).resolves({ Items: [{ id: 'hop-palermo' }, { id: 'hop-belgrano' }] });
+    expect(await repos.listHopPoints()).toEqual([{ id: 'hop-palermo' }, { id: 'hop-belgrano' }]);
+    expect(ddb.commandCalls(ScanCommand)[0]!.args[0].input).toMatchObject({ TableName: 'hp' });
   });
 
   it('updatePackageStatus setea estado, punto y plazo, y exige que el paquete exista', async () => {

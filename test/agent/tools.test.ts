@@ -17,6 +17,9 @@ const palermo: HopPoint = {
   openingHours: 'Lun a Vie 9 a 20',
 };
 
+const caballito: HopPoint = { ...palermo, id: 'hop-caballito', name: 'Punto HOP Caballito', lat: -34.6186, lng: -58.4341 };
+const belgrano: HopPoint = { ...palermo, id: 'hop-belgrano', name: 'Punto HOP Belgrano', lat: -34.5614, lng: -58.4567 };
+
 const mine: Package = {
   trackingId: 'HOP-0001',
   phone: PHONE,
@@ -35,6 +38,7 @@ function setup() {
     getPackagesByPhone: vi.fn(async (phone: string, limit: number) => (phone === PHONE ? [mine].slice(0, limit) : [])),
     getPackage: vi.fn(async (id: string) => ({ 'HOP-0001': mine, 'HOP-0002': theirs })[id]),
     getHopPoint: vi.fn(async (id: string) => (id === 'hop-palermo' ? palermo : undefined)),
+    listHopPoints: vi.fn(async () => [belgrano, caballito, palermo]),
   } as unknown as Repos;
   const tools = createTools({ repos, phone: PHONE, now: () => NOW });
   type AnyTool = { invoke(input: unknown): Promise<unknown> };
@@ -43,9 +47,45 @@ function setup() {
 }
 
 describe('tools del agente', () => {
-  it('expone exactamente las tres tools de consulta', () => {
+  it('expone exactamente las cinco tools de consulta', () => {
     const { byName } = setup();
-    expect(Object.keys(byName).sort()).toEqual(['get_hop_point', 'get_my_packages', 'get_package_by_tracking']);
+    expect(Object.keys(byName).sort()).toEqual([
+      'get_calendar',
+      'get_hop_point',
+      'get_my_packages',
+      'get_package_by_tracking',
+      'list_hop_points',
+    ]);
+  });
+
+  it('list_hop_points ordena por cercanía al punto actual para ofrecer opciones', async () => {
+    const { byName } = setup();
+    const res = (await byName['list_hop_points']!.invoke({ nearHopPointId: 'hop-palermo' })) as {
+      hopPoints: Array<{ id: string; distanceKm: number }>;
+    };
+    expect(res.hopPoints.map((h) => h.id)).toEqual(['hop-palermo', 'hop-caballito', 'hop-belgrano']);
+    expect(res.hopPoints.map((h) => h.distanceKm)).toEqual([0, 4, 5.2]);
+  });
+
+  it('list_hop_points sin punto de referencia devuelve todos, sin distancias', async () => {
+    const { byName } = setup();
+    const res = (await byName['list_hop_points']!.invoke({})) as { hopPoints: Array<Record<string, unknown>> };
+    expect(res.hopPoints).toHaveLength(3);
+    expect(res.hopPoints[0]).not.toHaveProperty('distanceKm');
+  });
+
+  it('get_calendar da hoy y los 14 días siguientes en hora de Buenos Aires', async () => {
+    const { byName } = setup();
+    const res = (await byName['get_calendar']!.invoke({})) as {
+      today: string;
+      todayDate: string;
+      days: Array<{ date: string; label: string }>;
+    };
+    expect(res.today).toBe('sábado 17 de octubre');
+    expect(res.todayDate).toBe('2026-10-17');
+    expect(res.days).toHaveLength(14);
+    expect(res.days[0]).toEqual({ date: '2026-10-18', label: 'domingo 18 de octubre' });
+    expect(res.days[13]).toEqual({ date: '2026-10-31', label: 'sábado 31 de octubre' });
   });
 
   it('get_my_packages usa el teléfono de la sesión y no expone el teléfono ni datos internos', async () => {

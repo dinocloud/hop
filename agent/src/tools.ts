@@ -2,7 +2,7 @@ import { tool } from '@strands-agents/sdk';
 import { z } from 'zod';
 import type { Repos } from '../../src/lib/dynamo.js';
 import { InvalidPhoneError } from '../../src/lib/phone.js';
-import { calendarDaysUntilInBuenosAires, formatDayInBuenosAires } from '../../src/lib/time.js';
+import { calendarDaysUntilInBuenosAires, formatDayInBuenosAires, isoDateInBuenosAires } from '../../src/lib/time.js';
 import type { HopPoint, Package } from '../../src/lib/types.js';
 
 /**
@@ -57,6 +57,20 @@ export function presentHopPoint(hop: HopPoint): Record<string, unknown> {
   };
 }
 
+/** Días que muestra `get_calendar`: cubren la ventana en la que se puede reprogramar. */
+export const CALENDAR_DAYS = 14;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const EARTH_RADIUS_KM = 6371;
+
+/** Distancia en línea recta (haversine) entre dos Puntos HOP, redondeada a 100 m. */
+function distanceKm(from: HopPoint, to: HopPoint): number {
+  const rad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = rad(to.lat - from.lat);
+  const dLng = rad(to.lng - from.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(from.lat)) * Math.cos(rad(to.lat)) * Math.sin(dLng / 2) ** 2;
+  return Math.round(2 * EARTH_RADIUS_KM * Math.asin(Math.sqrt(h)) * 10) / 10;
+}
+
 export function createTools(deps: ToolDeps) {
   const now = deps.now ?? (() => new Date());
   const getMyPackages = tool({
@@ -108,5 +122,46 @@ export function createTools(deps: ToolDeps) {
     },
   });
 
-  return [getMyPackages, getPackageByTracking, getHopPoint];
+  const listHopPoints = tool({
+    name: 'list_hop_points',
+    description:
+      'Lista los Puntos HOP. Con nearHopPointId (el punto actual del paquete) los ordena del más cercano al más lejano: usala para ofrecer opciones antes de cambiar de punto.',
+    inputSchema: z.object({
+      nearHopPointId: z
+        .string()
+        .trim()
+        .min(1)
+        .max(64)
+        .optional()
+        .describe('Id del Punto HOP de referencia, normalmente el actual del paquete'),
+    }),
+    callback: async ({ nearHopPointId }) => {
+      const points = await deps.repos.listHopPoints();
+      const reference = points.find((p) => p.id === nearHopPointId);
+      if (!reference) return { hopPoints: points.map(presentHopPoint) };
+      const byDistance = points.map((p) => ({ ...presentHopPoint(p), distanceKm: distanceKm(reference, p) }));
+      return { hopPoints: byDistance.sort((a, b) => a.distanceKm - b.distanceKm) };
+    },
+  });
+
+  const getCalendar = tool({
+    name: 'get_calendar',
+    description:
+      'Devuelve la fecha de hoy y la de los próximos 14 días en hora de Buenos Aires. Usala para entender fechas que diga el cliente ("el lunes", "pasado mañana") antes de reprogramar.',
+    inputSchema: z.object({}),
+    callback: async () => {
+      const today = now();
+      return {
+        today: formatDayInBuenosAires(today),
+        todayDate: isoDateInBuenosAires(today),
+        days: Array.from({ length: CALENDAR_DAYS }, (_, i) => {
+          // Buenos Aires no tiene horario de verano: sumar 24 h siempre es el día siguiente.
+          const day = new Date(today.getTime() + (i + 1) * DAY_MS);
+          return { date: isoDateInBuenosAires(day), label: formatDayInBuenosAires(day) };
+        }),
+      };
+    },
+  });
+
+  return [getMyPackages, getPackageByTracking, getHopPoint, listHopPoints, getCalendar];
 }
