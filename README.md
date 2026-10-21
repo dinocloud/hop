@@ -168,10 +168,18 @@ El agente de seguimiento para el cliente final corre en **Amazon Bedrock AgentCo
 
 - **Contrato** (`src/lib/agent-contract.ts`): request `{ phone, text }`, response `{ text, location | null }`. Si viene `location`, la Lambda inbound manda además el pin de WhatsApp. El modelo devuelve JSON `{ text, hopPointId | null }`; la ubicación la arma el servidor desde DynamoDB, así el modelo no puede inventar coordenadas, y solo hay pin si el cliente tiene un paquete `READY_AT_HOP` en ese punto. Si el modelo contesta en prosa, el texto va tal cual, sin pin. Si intenta un JSON que no se puede leer (después de escapar los saltos de línea), responde la disculpa: al cliente nunca le llega JSON crudo. No se fuerza salida estructurada ni se tocan los parámetros de muestreo (los Claude recientes rechazan `toolChoice` forzado y temperaturas distintas de la de fábrica).
 - **Límites**: 6 vueltas de tools, 4096 tokens de salida, ventana de 12 mensajes por sesión y 30 s por pedido contados desde que llega, incluida la espera en la cola de la sesión. Queda por debajo de los 40 s del cliente en la Lambda inbound, así la disculpa llega antes de que el cliente corte. Si al salir de la cola quedan menos de 5 s, responde la disculpa sin invocar al modelo. Una sesión procesa de a un mensaje (los mensajes seguidos del mismo cliente se encolan) y, si una invocación falla, la sesión se descarta para no dejar un hilo inconsistente.
-- **Tools** (`agent/src/tools.ts`): `get_my_packages` (usa el teléfono de la sesión, nunca uno que diga el usuario), `get_package_by_tracking` (solo si el paquete es del cliente) y `get_hop_point`. Las tools no devuelven teléfonos ni datos internos. Las fechas van ya escritas en hora de Buenos Aires (`deadlineLocal`, `scheduledLocal`, `daysLeft`), porque el plazo vence a las 23:59 de BA, que en ISO UTC es el día siguiente.
+- **Tools de consulta** (`agent/src/tools.ts`):
+  - `get_my_packages`: usa el teléfono de la sesión, nunca uno que diga el usuario;
+  - `get_package_by_tracking`: solo si el paquete es del cliente;
+  - `get_hop_point`;
+  - `list_hop_points`: ordenados por cercanía al punto actual;
+  - `get_calendar`: hoy y los próximos 14 días.
+
+  Las tools no devuelven teléfonos ni datos internos.
+- **Tools de resolución** (`agent/src/actions.ts`): extender el plazo, cambiar de punto, reprogramar y devolver. Ver [Acciones del agente](#acciones-del-agente-resolución-del-aviso). Las fechas van ya escritas en hora de Buenos Aires (`deadlineLocal`, `scheduledLocal`, `daysLeft`), porque el plazo vence a las 23:59 de BA, que en ISO UTC es el día siguiente.
 - **Sesión**: AgentCore aísla cada `sessionId` en su propia instancia; un agente en memoria por sesión conserva el hilo. La Lambda inbound usa el `sessionId` de la conversación.
 - **Modelo**: contexto `hop:agentModelId` (`us.anthropic.claude-sonnet-5-5`), `maxTokens` explícito y effort `low` (`output_config.effort` por `additionalModelRequestFields`): Sonnet 5.5 piensa por defecto con effort `high`, que en un chat de seguimiento solo suma latencia. El rol del runtime solo puede invocar ese perfil de inferencia y los foundation models de Claude a los que enruta.
-- **Rol del runtime**: trust a `bedrock-agentcore.amazonaws.com` condicionado a esta cuenta y región, lectura de `Packages`/`HopPoints`, lectura del asset, logs del runtime, X-Ray y métricas del namespace `bedrock-agentcore`. Red `PUBLIC` solo por ser dev. Sin authorizer: el único caller es la Lambda, por SigV4.
+- **Rol del runtime**: trust a `bedrock-agentcore.amazonaws.com` condicionado a esta cuenta y región, lectura y `UpdateItem` de `Packages`, `GetItem`/`Scan` de `HopPoints`, lectura del asset, logs del runtime, X-Ray y métricas del namespace `bedrock-agentcore`. Red `PUBLIC` solo por ser dev. Sin authorizer: el único caller es la Lambda, por SigV4.
 - El ARN del runtime queda en el output `AgentRuntimeArn` y en SSM `/hop-hackathon/dev/app/agent-runtime-arn`.
 
 Local:
@@ -196,6 +204,61 @@ aws bedrock-agentcore invoke-agent-runtime --region us-east-1 \
 ```
 
 CloudFormation acepta `NODE_22` en `CodeConfiguration.Runtime` con un entry point `.js` en la raíz del zip, que es lo que arma el bundle único de esbuild.
+
+### Acciones del agente (resolución del aviso)
+
+Cuando la persona responde al aviso "paquete listo", el agente resuelve sin pasar por un humano:
+
+| Tool | Qué hace | Cuándo se puede | Qué queda en `Packages` |
+|---|---|---|---|
+| `extend_deadline(trackingId, days)` | Suma de 1 a 7 días al plazo | `READY_AT_HOP` | `deadlineAt` = fin del día N en BA; estado y punto sin cambios |
+| `change_hop_point(trackingId, hopPointId)` | Cambia de Punto HOP | `READY_AT_HOP` o `IN_TRANSIT` | `IN_TRANSIT`, `hopPointId` nuevo, sin `deadlineAt` ni `readyNotification*` |
+| `reschedule_delivery(trackingId, date)` | Reprograma para otra fecha, de mañana a 14 días | `READY_AT_HOP` o `IN_TRANSIT` | `IN_TRANSIT`, `scheduledAt` a las 12:00 de BA, sin `deadlineAt` ni `readyNotification*` |
+| `request_return(trackingId)` | Devuelve al remitente (definitivo) | `READY_AT_HOP` o `IN_TRANSIT` | `RETURNED`, sin `deadlineAt` ni `readyNotification*` |
+
+Reglas:
+- **Dos pasos.**
+  - Con `confirmed: false` la tool devuelve un preview sin escribir (la fecha nueva, el punto nuevo, el aviso de que la devolución es definitiva), y el agente le pregunta al cliente si confirma.
+  - Con `confirmed: true` escribe, pero solo si ese mismo preview ya se mostró en la sesión. El modelo no puede ejecutar un cambio que el cliente no vio.
+- **Solo paquetes del teléfono de la sesión**, y con control de concurrencia: si el paquete cambió entre el preview y la confirmación, pide volver a consultarlo.
+- **Cambiar de punto o reprogramar deja el paquete en camino.** Cuando el sistema de envíos lo marca `READY_AT_HOP`, el hook manda el aviso de nuevo, con plazo nuevo.
+- **Si tiene más de un paquete listo o en camino**, el agente pregunta cuál antes de hacer nada. Si piden otra cosa, dice qué sí puede hacer.
+
+Conversaciones de ejemplo. Son respuestas reales del modelo, con datos en memoria, y "hoy" es miércoles 21 de octubre:
+
+**Extender el plazo** (HOP-0001, listo en Palermo, vence el jueves 22):
+> **Cliente:** Hola, necesito 3 días más para retirar mi paquete
+> **Bot:** Hola Ana. Tu paquete HOP-0001 está listo para retirar en Punto HOP Palermo (Av. Santa Fe 3253) y vence mañana, jueves 22 de octubre. ¿Extiendo el plazo 3 días, hasta el domingo 25 de octubre?
+> **Cliente:** sí
+> **Bot:** Listo, extendí el plazo. Ahora podés retirar tu paquete HOP-0001 hasta el domingo 25 de octubre (te quedan 4 días).
+
+Resultado: `deadlineAt` pasa de `2026-10-23T02:59:59.000Z` a `2026-10-26T02:59:59.000Z`. El estado y `hopPointId` no cambian.
+
+**Cambiar de punto** (el mismo paquete):
+> **Cliente:** ¿Lo puedo retirar en otro punto más cerca de Belgrano?
+> **Bot:** Sí, tenemos el Punto HOP Belgrano en Av. Cabildo 2040 (Lun a Sáb 10 a 19). Si lo cambiás, el paquete vuelve a quedar en camino y te avisamos cuando llegue, con un plazo nuevo. ¿Confirmás el cambio a Belgrano?
+> **Cliente:** dale
+> **Bot:** Listo, cambié tu paquete HOP-0001 al Punto HOP Belgrano. Ahora está en camino y, cuando llegue, te avisamos con el nuevo plazo de retiro.
+
+Resultado: `status: IN_TRANSIT`, `hopPointId: hop-belgrano`, sin `deadlineAt` ni `readyNotificationStatus`.
+
+**Reprogramar** (HOP-0002, listo en Caballito):
+> **Cliente:** No voy a poder ir a buscarlo, ¿me lo podés reprogramar para el lunes?
+> **Bot:** Dale. Reprogramo la entrega de tu paquete HOP-0002 para el lunes 26 de octubre y queda en camino. ¿Confirmás?
+> **Cliente:** sí, confirmo
+> **Bot:** Listo, Bruno. Reprogramé tu paquete HOP-0002 para el lunes 26 de octubre.
+
+Resultado: `status: IN_TRANSIT`, `scheduledAt: 2026-10-26T15:00:00.000Z`, sin `deadlineAt`.
+
+**Devolver** (HOP-0003, listo en Belgrano):
+> **Cliente:** quiero devolverlo
+> **Bot:** Si lo devolvemos al remitente, es definitivo y ya no vas a poder retirarlo. ¿Confirmás la devolución?
+> **Cliente:** no, mejor no
+> **Bot:** Listo, no devolví nada. Tu paquete HOP-0003 sigue disponible en Punto HOP Belgrano hasta el sábado 24 de octubre.
+> **Cliente:** pensándolo bien sí, devolvelo
+> **Bot:** Listo, tu paquete HOP-0003 quedó devuelto al remitente.
+
+Resultado: con el "no" no se escribe nada; con el "sí", `status: RETURNED`.
 
 ## Mensajes entrantes (`src/lambdas/inbound-router`)
 
