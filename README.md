@@ -146,14 +146,17 @@ Respuestas:
 | `202 { trackingId, status, notified, messageId?, duplicate? }` | Estado guardado. Con `READY_AT_HOP` se guarda `deadlineAt` (fin del día N en hora de Buenos Aires) y se envía `paquete_listo` con `[nombre, Punto HOP, días]`. |
 | `400` | Body, path o Punto HOP inválidos. |
 | `404` | El paquete no existe. |
-| `409` | Transición no permitida (`DELIVERED` y `RETURNED` son terminales) o el paquete cambió entre la lectura y la escritura: reintentar. |
-| `503` | El envío de la plantilla falló por una causa transitoria (throttling, timeout). El estado quedó guardado; reintentar es seguro. |
+| `409` | El paquete cambió entre la lectura y la escritura: reintentar. |
+| `422` | Transición no permitida (`DELIVERED` y `RETURNED` son terminales): no reintentar. |
+| `503` | El envío de la plantilla falló por una causa transitoria (throttling, 5xx). El estado quedó guardado; reintentar es seguro. |
 
 Garantías:
-- **Idempotente**: un `READY_AT_HOP` repetido para el mismo punto no reenvía la plantilla ni corre el plazo (`duplicate: true`). Si cambia el punto, se avisa de nuevo con plazo nuevo.
-- El resultado del aviso queda en el paquete (`readyNotificationStatus: SENT | FAILED`, `readyMessageId`, `readyNotificationError`).
-- Si el envío falla de forma permanente (por ejemplo la plantilla todavía no está aprobada en Meta) responde `202` con `notified: false`, registra `FAILED` y emite la métrica `HopHackathon/TemplateSendFailed`, que tiene alarma (`hop-hackathon-template-send-failed`).
-- La Lambda tiene timeout de 20 s y los clientes del SDK 5 s por request, siempre por debajo de los 29 s de API Gateway.
+- **Idempotente**: un `READY_AT_HOP` repetido para el mismo punto no reenvía la plantilla ni corre el plazo (`duplicate: true`). Si cambia el punto, se avisa de nuevo con plazo nuevo. Un `DELIVERED` o `RETURNED` repetido (webhook reintentado) responde `202` con `duplicate: true` sin escribir.
+- **Plazo y aviso coinciden**: cuando el aviso todavía no salió (por ejemplo un paquete que el seed dejó en `READY_AT_HOP`), el plazo se calcula de nuevo con los `deadlineDays` del body, que son los días que dice la plantilla.
+- El resultado del aviso queda en el paquete (`readyNotificationStatus: SENT | FAILED`, `readyMessageId`, `readyNotificationError`). Si la plantilla sale pero falla ese registro, igual responde `notified: true` y lo deja en el log.
+- Si el envío falla de forma permanente (por ejemplo la plantilla todavía no está aprobada en Meta) responde `202` con `notified: false`, registra `FAILED` y emite la métrica `HopHackathon/TemplateSendFailed`, que tiene alarma (`hop-hackathon-template-send-failed`). Los fallos transitorios no cuentan para esa métrica.
+- Un timeout o corte de conexión durante el envío es ambiguo (el mensaje pudo salir): responde `202` con `notified: false` y no pide reintento, para no duplicar el aviso. Repetir el `READY_AT_HOP` a mano lo reenvía.
+- La Lambda tiene timeout de 20 s y los clientes del SDK cortan a los 5 s por request (`throwOnRequestTimeout`), siempre por debajo de los 29 s de API Gateway.
 
 ## Datos de prueba
 

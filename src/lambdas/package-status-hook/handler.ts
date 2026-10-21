@@ -1,11 +1,11 @@
 import { Metrics, MetricUnit } from '@aws-lambda-powertools/metrics';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-lambda';
 import { z } from 'zod';
-import { errorInfo, errorName, isTransientAwsError } from '../../lib/aws-errors.js';
+import { errorInfo, errorName, isAmbiguousSendError, isTransientAwsError } from '../../lib/aws-errors.js';
 import { ConcurrentUpdateError, PackageNotFoundError, createRepos, type Repos } from '../../lib/dynamo.js';
 import { logger, maskPhone } from '../../lib/logger.js';
 import { endOfDayInBuenosAires } from '../../lib/time.js';
-import { PACKAGE_STATUSES, canTransition, requireEnv, type Package } from '../../lib/types.js';
+import { PACKAGE_STATUSES, canTransition, isTerminalStatus, requireEnv, type Package } from '../../lib/types.js';
 import { createWhatsAppSender, type WhatsAppSender } from '../../lib/whatsapp.js';
 
 /**
@@ -16,16 +16,20 @@ import { createWhatsAppSender, type WhatsAppSender } from '../../lib/whatsapp.js
  * Reemplaza las campañas por CSV que hoy pasan por un middleware.
  *
  * Garantías:
- * - Idempotente: el mismo `READY_AT_HOP` repetido no reenvía la plantilla ni corre el plazo.
- * - Transiciones controladas: `DELIVERED` y `RETURNED` son terminales (409 si se intenta salir).
+ * - Idempotente: el mismo `READY_AT_HOP` repetido no reenvía la plantilla ni corre el plazo, y un
+ *   estado terminal repetido (webhook reintentado) no es un error.
+ * - Transiciones controladas: `DELIVERED` y `RETURNED` son terminales (422 si se intenta salir).
  * - Sin updates perdidos: la escritura exige que el paquete no haya cambiado desde la lectura (409 si cambió).
- * - El aviso queda registrado en el paquete (`readyNotificationStatus`) y, si falla, en una métrica.
+ * - El plazo guardado coincide siempre con los días que dice el aviso.
+ * - El aviso queda registrado en el paquete (`readyNotificationStatus`) y, si falla de forma permanente, en una métrica.
  *
  * Respuestas:
  * - 202 `{ trackingId, status, notified, messageId?, duplicate? }`: el estado quedó guardado.
- * - 400 body, path o Punto HOP inválidos. 404 el paquete no existe. 409 transición inválida o conflicto.
- * - 503 el envío falló por una causa transitoria (throttling, timeout): el estado quedó guardado,
- *   el sistema de envíos puede reintentar y no se duplica nada.
+ * - 400 body, path o Punto HOP inválidos. 404 el paquete no existe. 409 el paquete cambió durante el
+ *   procesamiento (reintentar). 422 transición no permitida (no reintentar).
+ * - 503 el envío falló por una causa transitoria (throttling, 5xx): el estado quedó guardado y el
+ *   sistema de envíos puede reintentar. Un timeout del envío es ambiguo (el mensaje pudo salir):
+ *   responde 202 `notified: false` sin pedir reintento, para no duplicar el aviso.
  */
 
 const TRACKING_ID = /^[A-Za-z0-9-]{3,64}$/;
@@ -101,9 +105,14 @@ export function createHandler(deps: HookDeps) {
       const current = await deps.repos.getPackage(trackingId);
       if (!current) return json(404, { error: `No existe el paquete ${trackingId}` });
 
+      if (current.status === body.status && isTerminalStatus(current.status)) {
+        logger.info('Estado terminal repetido, sin cambios', { status: current.status });
+        return json(202, { trackingId, status: current.status, notified: false, duplicate: true });
+      }
+
       if (!canTransition(current.status, body.status)) {
         logger.warn('Transición de estado no permitida', { from: current.status, to: body.status });
-        return json(409, { error: 'Transición de estado no permitida', from: current.status, to: body.status });
+        return json(422, { error: 'Transición de estado no permitida', from: current.status, to: body.status });
       }
 
       if (body.status !== 'READY_AT_HOP') {
@@ -141,8 +150,9 @@ export function createHandler(deps: HookDeps) {
         {
           status: 'READY_AT_HOP',
           hopPointId,
-          // Si es el mismo punto, el plazo original se conserva (solo cambia si el envío previo falló y no había plazo).
-          deadlineAt: sameReady && current.deadlineAt ? current.deadlineAt : endOfDayInBuenosAires(at, body.deadlineDays!).toISOString(),
+          // Acá se llega solo si el aviso todavía no salió, así que el plazo se calcula de nuevo para
+          // que coincida con los días que va a decir la plantilla.
+          deadlineAt: endOfDayInBuenosAires(at, body.deadlineDays!).toISOString(),
           resetReadyNotification: !sameReady,
         },
         at,
@@ -163,35 +173,51 @@ export function createHandler(deps: HookDeps) {
   }
 
   async function notifyReady(pkg: Package, hopPointName: string, deadlineDays: number, at: Date): Promise<APIGatewayProxyResult> {
+    let messageId: string | undefined;
     try {
-      const { messageId } = await deps.sender.sendTemplate(pkg.phone, deps.templateName, [
+      ({ messageId } = await deps.sender.sendTemplate(pkg.phone, deps.templateName, [
         pkg.customerName,
         hopPointName,
         String(deadlineDays),
-      ]);
-      await deps.repos.markReadyNotification(pkg.trackingId, { status: 'SENT', messageId }, at);
-      metrics.addMetric(METRIC_TEMPLATE_SENT, MetricUnit.Count, 1);
-      logger.info('Plantilla enviada', { template: deps.templateName, messageId });
-      return json(202, { trackingId: pkg.trackingId, status: pkg.status, notified: true, messageId });
+      ]));
     } catch (err) {
-      metrics.addMetric(METRIC_TEMPLATE_SEND_FAILED, MetricUnit.Count, 1);
-      const info = errorInfo(err);
-      if (isTransientAwsError(err)) {
-        // El estado ya quedó guardado y el aviso no está marcado como SENT: el reintento lo vuelve a enviar.
-        logger.warn('Envío de plantilla falló por causa transitoria', { error: info, template: deps.templateName });
-        return json(503, {
-          trackingId: pkg.trackingId,
-          status: pkg.status,
-          notified: false,
-          error: 'Envío temporalmente no disponible, reintentar',
-        });
-      }
-      logger.error('No se pudo enviar la plantilla', { error: info, template: deps.templateName });
-      await deps.repos.markReadyNotification(pkg.trackingId, { status: 'FAILED', error: errorName(err) }, at).catch((e: unknown) => {
-        logger.error('No se pudo registrar el fallo del aviso', { error: errorInfo(e) });
-      });
+      return onSendFailed(pkg, err, at);
+    }
+    metrics.addMetric(METRIC_TEMPLATE_SENT, MetricUnit.Count, 1);
+    logger.info('Plantilla enviada', { template: deps.templateName, messageId });
+
+    try {
+      await deps.repos.markReadyNotification(pkg.trackingId, { status: 'SENT', messageId }, at);
+    } catch (err) {
+      // La plantilla ya salió: no es un fallo de envío. Sin este registro, un READY_AT_HOP repetido la reenviaría.
+      logger.error('La plantilla salió pero no se pudo registrar el aviso', { error: errorInfo(err), messageId });
+    }
+    return json(202, { trackingId: pkg.trackingId, status: pkg.status, notified: true, messageId });
+  }
+
+  async function onSendFailed(pkg: Package, err: unknown, at: Date): Promise<APIGatewayProxyResult> {
+    const info = errorInfo(err);
+    if (isAmbiguousSendError(err)) {
+      // No se sabe si salió: pedir un reintento podría duplicar el aviso. Un READY_AT_HOP repetido a mano lo reenvía.
+      logger.warn('Resultado del envío de la plantilla desconocido: no se pide reintento', { error: info, template: deps.templateName });
       return json(202, { trackingId: pkg.trackingId, status: pkg.status, notified: false });
     }
+    if (isTransientAwsError(err)) {
+      // El estado ya quedó guardado y el aviso no está marcado como SENT: el reintento lo vuelve a enviar.
+      logger.warn('Envío de plantilla falló por causa transitoria', { error: info, template: deps.templateName });
+      return json(503, {
+        trackingId: pkg.trackingId,
+        status: pkg.status,
+        notified: false,
+        error: 'Envío temporalmente no disponible, reintentar',
+      });
+    }
+    metrics.addMetric(METRIC_TEMPLATE_SEND_FAILED, MetricUnit.Count, 1);
+    logger.error('No se pudo enviar la plantilla', { error: info, template: deps.templateName });
+    await deps.repos.markReadyNotification(pkg.trackingId, { status: 'FAILED', error: errorName(err) }, at).catch((e: unknown) => {
+      logger.error('No se pudo registrar el fallo del aviso', { error: errorInfo(e) });
+    });
+    return json(202, { trackingId: pkg.trackingId, status: pkg.status, notified: false });
   }
 }
 
