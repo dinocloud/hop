@@ -99,18 +99,31 @@ describe('package-status-hook', () => {
     expect(ctx.sender.sendTemplate).not.toHaveBeenCalled();
   });
 
-  it('READY_AT_HOP repetido con aviso fallido: reintenta el envío conservando el plazo original', async () => {
+  it('READY_AT_HOP repetido con aviso fallido: reintenta el envío con un plazo que coincide con los días del aviso', async () => {
     ctx = setup(pkg({ status: 'READY_AT_HOP', hopPointId: 'hop-palermo', deadlineAt: '2026-10-20T02:59:59.000Z', readyNotificationStatus: 'FAILED' }));
     const res = await ctx.handler(event('HOP-0001', ready));
     expect(res.statusCode).toBe(202);
     expect(parse(res).notified).toBe(true);
     expect(ctx.repos.updatePackageStatus).toHaveBeenCalledWith(
       'HOP-0001',
-      { status: 'READY_AT_HOP', hopPointId: 'hop-palermo', deadlineAt: '2026-10-20T02:59:59.000Z', resetReadyNotification: false },
+      { status: 'READY_AT_HOP', hopPointId: 'hop-palermo', deadlineAt: DEADLINE_5D, resetReadyNotification: false },
       NOW,
       { expectedUpdatedAt: '2026-10-17T10:00:00Z' },
     );
-    expect(ctx.sender.sendTemplate).toHaveBeenCalledTimes(1);
+    expect(ctx.sender.sendTemplate).toHaveBeenCalledWith('+5491112345678', 'paquete_listo', ['Ana', 'Punto HOP Palermo', '5']);
+  });
+
+  it('READY_AT_HOP sobre un paquete listo sin aviso previo (como lo deja el seed): el plazo guardado es el que dice el aviso', async () => {
+    ctx = setup(pkg({ status: 'READY_AT_HOP', hopPointId: 'hop-palermo', deadlineAt: '2026-10-18T12:00:00.000Z' }));
+    const res = await ctx.handler(event('HOP-0001', ready));
+    expect(res.statusCode).toBe(202);
+    expect(ctx.repos.updatePackageStatus).toHaveBeenCalledWith(
+      'HOP-0001',
+      expect.objectContaining({ deadlineAt: DEADLINE_5D }),
+      NOW,
+      expect.anything(),
+    );
+    expect(ctx.sender.sendTemplate).toHaveBeenCalledWith('+5491112345678', 'paquete_listo', ['Ana', 'Punto HOP Palermo', '5']);
   });
 
   it('READY_AT_HOP en otro punto: nuevo plazo y nuevo aviso', async () => {
@@ -135,13 +148,34 @@ describe('package-status-hook', () => {
     expect(ctx.metrics.addMetric).toHaveBeenCalledWith(METRIC_TEMPLATE_SEND_FAILED, 'Count', 1);
   });
 
-  it('si la plantilla falla de forma transitoria: 503 para que reintenten, sin marcar SENT', async () => {
-    vi.mocked(ctx.sender.sendTemplate).mockRejectedValueOnce(Object.assign(new Error('slow down'), { name: 'ThrottlingException' }));
+  it('si WhatsApp devuelve throttling (429): 503 para que reintenten, sin marcar SENT ni contarlo como fallo permanente', async () => {
+    vi.mocked(ctx.sender.sendTemplate).mockRejectedValueOnce(
+      Object.assign(new Error('Rate exceeded'), { name: 'ThrottledRequestException', $metadata: { httpStatusCode: 429 }, $retryable: {} }),
+    );
     const res = await ctx.handler(event('HOP-0001', ready));
     expect(res.statusCode).toBe(503);
     expect(parse(res).notified).toBe(false);
     expect(ctx.repos.markReadyNotification).not.toHaveBeenCalled();
-    expect(ctx.metrics.addMetric).toHaveBeenCalledWith(METRIC_TEMPLATE_SEND_FAILED, 'Count', 1);
+    expect(ctx.metrics.addMetric).not.toHaveBeenCalledWith(METRIC_TEMPLATE_SEND_FAILED, 'Count', 1);
+  });
+
+  it('si el envío queda en un timeout ambiguo: 202 sin pedir reintento, para no duplicar el aviso', async () => {
+    vi.mocked(ctx.sender.sendTemplate).mockRejectedValueOnce(Object.assign(new Error('socket hang up'), { name: 'TimeoutError' }));
+    const res = await ctx.handler(event('HOP-0001', ready));
+    expect(res.statusCode).toBe(202);
+    expect(parse(res).notified).toBe(false);
+    expect(ctx.repos.markReadyNotification).not.toHaveBeenCalled();
+  });
+
+  it('si la plantilla sale pero falla el registro en DynamoDB: 202 notified=true y no cuenta como fallo de envío', async () => {
+    vi.mocked(ctx.repos.markReadyNotification).mockRejectedValueOnce(
+      Object.assign(new Error('throttled'), { name: 'ProvisionedThroughputExceededException' }),
+    );
+    const res = await ctx.handler(event('HOP-0001', ready));
+    expect(res.statusCode).toBe(202);
+    expect(parse(res)).toEqual({ trackingId: 'HOP-0001', status: 'READY_AT_HOP', notified: true, messageId: 'wamid.1' });
+    expect(ctx.sender.sendTemplate).toHaveBeenCalledTimes(1);
+    expect(ctx.metrics.addMetric).not.toHaveBeenCalledWith(METRIC_TEMPLATE_SEND_FAILED, 'Count', 1);
   });
 
   it('otros estados: persiste sin plazo, limpia el aviso y no envía nada', async () => {
@@ -161,12 +195,20 @@ describe('package-status-hook', () => {
   it.each([
     ['DELIVERED → READY_AT_HOP', 'DELIVERED', ready],
     ['RETURNED → IN_TRANSIT', 'RETURNED', { status: 'IN_TRANSIT' }],
-  ])('409 en transición no permitida: %s', async (_name, from, body) => {
+  ])('422 en transición no permitida (no hay que reintentar): %s', async (_name, from, body) => {
     ctx = setup(pkg({ status: from as Package['status'] }));
     const res = await ctx.handler(event('HOP-0001', body));
-    expect(res.statusCode).toBe(409);
+    expect(res.statusCode).toBe(422);
     expect(ctx.repos.updatePackageStatus).not.toHaveBeenCalled();
     expect(ctx.sender.sendTemplate).not.toHaveBeenCalled();
+  });
+
+  it.each(['DELIVERED', 'RETURNED'] as const)('%s repetido: 202 duplicate, sin escribir (un webhook reintentado no es un conflicto)', async (status) => {
+    ctx = setup(pkg({ status }));
+    const res = await ctx.handler(event('HOP-0001', { status }));
+    expect(res.statusCode).toBe(202);
+    expect(parse(res)).toEqual({ trackingId: 'HOP-0001', status, notified: false, duplicate: true });
+    expect(ctx.repos.updatePackageStatus).not.toHaveBeenCalled();
   });
 
   it('409 si el paquete cambió entre la lectura y la escritura', async () => {

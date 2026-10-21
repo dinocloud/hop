@@ -5,6 +5,12 @@ import { Construct } from 'constructs';
 export interface CiStackProps extends cdk.StackProps {
   /** `owner/repo` en GitHub. */
   readonly githubRepo: string;
+  /**
+   * Prefijo del claim `sub` de los tokens OIDC del repo (`sub_claim_prefix` de
+   * `GET /repos/{owner}/{repo}/actions/oidc/customization/sub`). Los repos nuevos usan
+   * subjects inmutables: `repo:<owner>@<ownerId>/<repo>@<repoId>`, no `repo:<owner>/<repo>`.
+   */
+  readonly githubSubjectPrefix: string;
   /** Ramas que pueden desplegar (push). Solo `main` en este proyecto. */
   readonly deployBranches: string[];
 }
@@ -33,7 +39,10 @@ export class CiStack extends cdk.Stack {
     const providerArn = `arn:aws:iam::${this.account}:oidc-provider/token.actions.githubusercontent.com`;
     const provider = iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(this, 'GithubOidcProvider', providerArn);
 
-    const subjects = props.deployBranches.map((branch) => `repo:${props.githubRepo}:ref:refs/heads/${branch}`);
+    if (!props.githubSubjectPrefix.startsWith('repo:')) {
+      throw new Error(`githubSubjectPrefix tiene que empezar con "repo:" (recibido: "${props.githubSubjectPrefix}")`);
+    }
+    const subjects = props.deployBranches.map((branch) => `${props.githubSubjectPrefix}:ref:refs/heads/${branch}`);
 
     this.deployRole = new iam.Role(this, 'DeployRole', {
       roleName: 'hop-hackathon-github-deploy',

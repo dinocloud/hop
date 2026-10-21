@@ -26,6 +26,8 @@ export interface HopStackProps extends cdk.StackProps {
   readonly templateName: string;
   /** Código de idioma con el que se aprobó la plantilla (ej. `es_AR`). */
   readonly templateLanguage: string;
+  /** Versión de la Cloud API de Meta para `SendWhatsAppMessage` (ej. `v23.0`). */
+  readonly metaApiVersion: string;
   /** Perfil de inferencia de Bedrock que usa el agente (ej. `us.anthropic.claude-sonnet-5-5`). */
   readonly agentModelId: string;
   /** Carpeta con el bundle del agente (`npm run build:agent`). Default: `agent/dist`. */
@@ -68,7 +70,7 @@ export class HopStack extends cdk.Stack {
 
   constructor(scope: Construct, id: string, props: HopStackProps) {
     super(scope, id, props);
-    const { stage, templateName, templateLanguage, agentModelId } = props;
+    const { stage, templateName, templateLanguage, metaApiVersion, agentModelId } = props;
 
     // ----------------------------------------------------------------------
     // Configuración externa (setup de WhatsApp). Se resuelve en deploy desde SSM.
@@ -147,6 +149,7 @@ export class HopStack extends cdk.Stack {
       [ENV.ORIGINATION_PHONE_NUMBER_ID]: originationPhoneNumberId,
       [ENV.TEMPLATE_NAME]: templateName,
       [ENV.TEMPLATE_LANGUAGE]: templateLanguage,
+      [ENV.META_API_VERSION]: metaApiVersion,
       POWERTOOLS_LOG_LEVEL: 'INFO',
       POWERTOOLS_METRICS_NAMESPACE: METRICS_NAMESPACE,
       NODE_OPTIONS: '--enable-source-maps',

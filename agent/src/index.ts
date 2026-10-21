@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { AgentRequestSchema, FALLBACK_REPLY, type AgentReply, type AgentRequest } from '../../src/lib/agent-contract.js';
 import { createRepos, type Repos } from '../../src/lib/dynamo.js';
 import { InvalidPhoneError, maskPhone, normalizePhone } from '../../src/lib/phone.js';
-import { askAgent, createHopAgent, type InvokableAgent } from './agent.js';
+import { INVOKE_TIMEOUT_MS, askAgent, createHopAgent, hasPackageReadyAt, type InvokableAgent } from './agent.js';
 
 /**
  * Servidor del runtime de AgentCore (deploy de código directo, NODE_22).
@@ -41,12 +41,24 @@ export interface InvocationContext {
   log?: { info: (o: unknown, m?: string) => void; warn: (o: unknown, m?: string) => void };
 }
 
+/** Con menos tiempo que esto no vale la pena invocar al modelo: se responde la disculpa. */
+export const MIN_AGENT_TIME_MS = 5_000;
+
+export interface AskOptions {
+  /** Teléfono de la sesión: decide de qué Puntos HOP se puede mandar el pin. */
+  phone: string;
+  /** Lo que queda del presupuesto, contado desde que llegó el pedido (incluye la cola). */
+  timeoutMs: number;
+}
+
 export interface InvocationHandlerDeps {
-  repos: Pick<Repos, 'getHopPoint'> & Partial<Repos>;
+  repos: Pick<Repos, 'getHopPoint' | 'getPackagesByPhone'> & Partial<Repos>;
   modelId?: string;
   /** Fábrica del agente (inyectable en tests). */
   agentFactory?: (deps: { repos: Repos; phone: string; modelId?: string }) => InvokableAgent;
-  ask?: (agent: InvokableAgent, text: string) => Promise<AgentReply>;
+  ask?: (agent: InvokableAgent, text: string, options: AskOptions) => Promise<AgentReply>;
+  /** Reloj en ms (inyectable en tests). */
+  now?: () => number;
 }
 
 export function createInvocationHandler(deps: InvocationHandlerDeps) {
@@ -55,9 +67,23 @@ export function createInvocationHandler(deps: InvocationHandlerDeps) {
   // (Strands rechaza invocar el mismo agente en paralelo).
   const queues = new Map<string, Promise<unknown>>();
   const agentFactory = deps.agentFactory ?? createHopAgent;
-  const ask = deps.ask ?? ((agent, text) => askAgent(agent, text, { getHopPoint: deps.repos.getHopPoint }));
+  const now = deps.now ?? Date.now;
+  const ask =
+    deps.ask ??
+    ((agent, text, { phone, timeoutMs }) =>
+      askAgent(agent, text, {
+        getHopPoint: deps.repos.getHopPoint,
+        canShowPin: (hopPointId) => hasPackageReadyAt(deps.repos, phone, hopPointId),
+        timeoutMs,
+      }));
 
-  async function process(request: AgentRequest, context: InvocationContext, key: string, phone: string): Promise<AgentReply> {
+  async function process(request: AgentRequest, context: InvocationContext, key: string, phone: string, deadline: number): Promise<AgentReply> {
+    const timeoutMs = deadline - now();
+    if (timeoutMs < MIN_AGENT_TIME_MS) {
+      // El pedido esperó en la cola de la sesión: el cliente de la Lambda está por cortar.
+      context.log?.warn({ remainingMs: timeoutMs }, 'sin tiempo para el agente después de la cola');
+      return FALLBACK_REPLY;
+    }
     let session = sessions.get(key);
     // Un sessionId es de un solo teléfono. Si cambia, se descarta el hilo anterior.
     if (!session || session.phone !== phone) {
@@ -66,7 +92,7 @@ export function createInvocationHandler(deps: InvocationHandlerDeps) {
     }
     context.log?.info({ phone: maskPhone(phone), chars: request.text.length }, 'invocation');
     try {
-      return await ask(session.agent, request.text);
+      return await ask(session.agent, request.text, { phone, timeoutMs });
     } catch (err) {
       // El hilo queda inconsistente (turno de usuario sin respuesta): se descarta la sesión
       // para que el próximo mensaje arranque con un agente limpio.
@@ -79,8 +105,9 @@ export function createInvocationHandler(deps: InvocationHandlerDeps) {
   return async function handle(request: AgentRequest, context: InvocationContext): Promise<AgentReply> {
     const phone = normalizePhone(request.phone);
     const key = context.sessionId || phone;
+    const deadline = now() + INVOKE_TIMEOUT_MS;
     const previous = queues.get(key) ?? Promise.resolve();
-    const run = previous.catch(() => undefined).then(() => process(request, context, key, phone));
+    const run = previous.catch(() => undefined).then(() => process(request, context, key, phone, deadline));
     queues.set(key, run);
     try {
       return await run;
