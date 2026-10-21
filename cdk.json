@@ -1,5 +1,5 @@
 {
-  "app": "npx tsx infra/bin/hop.ts",
+  "app": "node agent/esbuild.config.mjs && npx tsx infra/bin/hop.ts",
   "watch": {
     "include": ["infra/**", "src/**", "agent/src/**"],
     "exclude": ["README.md", "cdk*.json", "**/*.test.ts", "node_modules", "cdk.out"]
