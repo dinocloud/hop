@@ -5,6 +5,7 @@ import {
   INVOKE_TIMEOUT_MS,
   InvalidModelReplyError,
   MAX_TURNS,
+  SYSTEM_PROMPT,
   askAgent,
   createHopAgent,
   hasPackageReadyAt,
@@ -94,6 +95,28 @@ describe('hasPackageReadyAt', () => {
 });
 
 describe('createHopAgent', () => {
+  it('registra las tools de consulta y las de resolución del aviso', () => {
+    const agent = createHopAgent({ repos: {} as Repos, phone: PHONE, region: 'us-east-1' });
+    expect(agent.tools.map((t) => t.name).sort()).toEqual([
+      'change_hop_point',
+      'extend_deadline',
+      'get_calendar',
+      'get_hop_point',
+      'get_my_packages',
+      'get_package_by_tracking',
+      'list_hop_points',
+      'request_return',
+      'reschedule_delivery',
+    ]);
+  });
+
+  it('el prompt pide preview y confirmación antes de actuar, y preguntar cuál paquete si hay varios', () => {
+    expect(SYSTEM_PROMPT).not.toMatch(/por ahora no podés/);
+    expect(SYSTEM_PROMPT).toMatch(/confirmed: false/);
+    expect(SYSTEM_PROMPT).toMatch(/confirmed: true/);
+    expect(SYSTEM_PROMPT).toMatch(/más de un paquete/);
+  });
+
   it('pide effort low: Sonnet 5.5 piensa por defecto y en un chat de seguimiento eso solo suma latencia', () => {
     const agent = createHopAgent({ repos: {} as Repos, phone: PHONE, region: 'us-east-1' });
     expect((agent.model as BedrockModel).getConfig().additionalRequestFields).toEqual({ output_config: { effort: 'low' } });
