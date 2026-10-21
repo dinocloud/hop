@@ -119,9 +119,9 @@ describe('createWhatsAppSender', () => {
   it('sendText y sendLocation fallan fuera de la ventana sin llamar a AWS, sin exponer el número', async () => {
     const sender = senderWith(closedWindow);
     await expect(sender.sendText(PHONE, 'hola')).rejects.toThrow(OutsideWindowError);
-    await expect(
-      sender.sendLocation(PHONE, { lat: -34.5, lng: -58.4, name: 'HOP', address: 'Calle 1' }),
-    ).rejects.toThrow(OutsideWindowError);
+    await expect(sender.sendLocation(PHONE, { lat: -34.5, lng: -58.4, name: 'HOP', address: 'Calle 1' })).rejects.toThrow(
+      OutsideWindowError,
+    );
     expect(social.commandCalls(SendWhatsAppMessageCommand)).toHaveLength(0);
     const err = (await sender.sendText(PHONE, 'hola').catch((e: unknown) => e)) as OutsideWindowError;
     expect(JSON.stringify(err)).not.toContain('12345678');
@@ -162,9 +162,7 @@ describe('createWhatsAppSender', () => {
   });
 
   it('sendTemplate rechaza un parámetro vacío antes de llamar a AWS', async () => {
-    await expect(senderWith(undefined).sendTemplate(PHONE, 'paquete_listo', ['', 'HOP', '1'])).rejects.toThrow(
-      InvalidMessageError,
-    );
+    await expect(senderWith(undefined).sendTemplate(PHONE, 'paquete_listo', ['', 'HOP', '1'])).rejects.toThrow(InvalidMessageError);
     expect(social.commandCalls(SendWhatsAppMessageCommand)).toHaveLength(0);
   });
 

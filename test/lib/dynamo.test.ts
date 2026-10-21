@@ -2,13 +2,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
-import {
-  ConcurrentUpdateError,
-  MESSAGE_LEASE_SECONDS,
-  PackageNotFoundError,
-  createRepos,
-  newSessionId,
-} from '../../src/lib/dynamo.js';
+import { ConcurrentUpdateError, MESSAGE_LEASE_SECONDS, PackageNotFoundError, createRepos, newSessionId } from '../../src/lib/dynamo.js';
 import { InvalidPhoneError } from '../../src/lib/phone.js';
 
 const ddb = mockClient(DynamoDBDocumentClient);
@@ -98,13 +92,15 @@ describe('repos', () => {
     const input = ddb.commandCalls(UpdateCommand)[0]!.args[0].input;
     expect(input.ConditionExpression).toBe('attribute_exists(trackingId) AND #updatedAt = :expectedUpdatedAt');
     expect(input.ExpressionAttributeValues?.[':expectedUpdatedAt']).toBe('2026-10-17T10:00:00Z');
-    expect(input.UpdateExpression).toContain('REMOVE #deadlineAt, #scheduledAt, #readyNotificationStatus, #readyNotifiedAt, #readyMessageId, #readyNotificationError');
+    expect(input.UpdateExpression).toContain(
+      'REMOVE #deadlineAt, #scheduledAt, #readyNotificationStatus, #readyNotifiedAt, #readyMessageId, #readyNotificationError',
+    );
     expectExpressionsConsistent(input);
 
     ddb.on(UpdateCommand).rejects(conditionalCheckFailed());
-    await expect(
-      repos.updatePackageStatus('HOP-0001', { status: 'DELIVERED' }, NOW, { expectedUpdatedAt: 'x' }),
-    ).rejects.toThrow(ConcurrentUpdateError);
+    await expect(repos.updatePackageStatus('HOP-0001', { status: 'DELIVERED' }, NOW, { expectedUpdatedAt: 'x' })).rejects.toThrow(
+      ConcurrentUpdateError,
+    );
   });
 
   it('markReadyNotification registra SENT con messageId y FAILED con el nombre del error', async () => {

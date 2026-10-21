@@ -1,11 +1,5 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import {
-  DynamoDBDocumentClient,
-  GetCommand,
-  QueryCommand,
-  UpdateCommand,
-  type UpdateCommandInput,
-} from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, QueryCommand, UpdateCommand, type UpdateCommandInput } from '@aws-sdk/lib-dynamodb';
 import { randomUUID } from 'node:crypto';
 import { SDK_TIMEOUTS } from './aws-errors.js';
 import { normalizePhone } from './phone.js';

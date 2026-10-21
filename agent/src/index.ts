@@ -77,7 +77,13 @@ export function createInvocationHandler(deps: InvocationHandlerDeps) {
         timeoutMs,
       }));
 
-  async function process(request: AgentRequest, context: InvocationContext, key: string, phone: string, deadline: number): Promise<AgentReply> {
+  async function process(
+    request: AgentRequest,
+    context: InvocationContext,
+    key: string,
+    phone: string,
+    deadline: number,
+  ): Promise<AgentReply> {
     const timeoutMs = deadline - now();
     if (timeoutMs < MIN_AGENT_TIME_MS) {
       // El pedido esperó en la cola de la sesión: el cliente de la Lambda está por cortar.

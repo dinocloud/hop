@@ -77,10 +77,7 @@ export class HopStack extends cdk.Stack {
     // ----------------------------------------------------------------------
     const ssmWhatsApp = `/${PREFIX}/${stage}/whatsapp`;
     // ID de AWS del número: `phone-number-id-<hex>`. Es el `originationPhoneNumberId` de la API.
-    const originationPhoneNumberId = ssm.StringParameter.valueForStringParameter(
-      this,
-      `${ssmWhatsApp}/aws-phone-number-id`,
-    );
+    const originationPhoneNumberId = ssm.StringParameter.valueForStringParameter(this, `${ssmWhatsApp}/aws-phone-number-id`);
     const inboundTopicArn = ssm.StringParameter.valueForStringParameter(this, `${ssmWhatsApp}/inbound-topic-arn`);
 
     // El ARN del número NO repite el prefijo del ID:
@@ -204,7 +201,11 @@ export class HopStack extends cdk.Stack {
       NagSuppressions.addResourceSuppressions(
         role,
         [
-          { id: 'AwsSolutions-IAM5', reason: 'X-Ray exige recurso * para PutTraceSegments/PutTelemetryRecords.', appliesTo: ['Resource::*'] },
+          {
+            id: 'AwsSolutions-IAM5',
+            reason: 'X-Ray exige recurso * para PutTraceSegments/PutTelemetryRecords.',
+            appliesTo: ['Resource::*'],
+          },
           {
             id: 'AwsSolutions-IAM5',
             reason: 'Los log streams viven bajo el propio log group de la función (<arn>:*); no es un comodín sobre otros log groups.',

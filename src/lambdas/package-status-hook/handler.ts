@@ -47,8 +47,7 @@ export const BodySchema = z
       if (body.deadlineDays === undefined)
         ctx.addIssue({ code: 'custom', path: ['deadlineDays'], message: 'Obligatorio para READY_AT_HOP' });
     } else {
-      if (body.hopPointId !== undefined)
-        ctx.addIssue({ code: 'custom', path: ['hopPointId'], message: 'Solo se acepta con READY_AT_HOP' });
+      if (body.hopPointId !== undefined) ctx.addIssue({ code: 'custom', path: ['hopPointId'], message: 'Solo se acepta con READY_AT_HOP' });
       if (body.deadlineDays !== undefined)
         ctx.addIssue({ code: 'custom', path: ['deadlineDays'], message: 'Solo se acepta con READY_AT_HOP' });
     }
@@ -117,12 +116,9 @@ export function createHandler(deps: HookDeps) {
       }
 
       if (body.status !== 'READY_AT_HOP') {
-        const pkg = await deps.repos.updatePackageStatus(
-          trackingId,
-          { status: body.status, resetReadyNotification: true },
-          now(),
-          { expectedUpdatedAt: current.updatedAt },
-        );
+        const pkg = await deps.repos.updatePackageStatus(trackingId, { status: body.status, resetReadyNotification: true }, now(), {
+          expectedUpdatedAt: current.updatedAt,
+        });
         logger.info('Estado actualizado', { status: pkg.status, phone: maskPhone(pkg.phone) });
         return json(202, { trackingId, status: pkg.status, notified: false });
       }

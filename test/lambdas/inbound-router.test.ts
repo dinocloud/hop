@@ -21,7 +21,7 @@ const SESSION = '0123456789abcdef0123456789abcdef0123';
 
 function snsEvent(...messages: string[]): SNSEvent {
   return {
-    Records: messages.map((Message, i) => ({ EventSource: 'aws:sns', Sns: { Message, MessageId: `sns-${i}` } })),
+    Records: messages.map((message, i) => ({ EventSource: 'aws:sns', Sns: { Message: message, MessageId: `sns-${i}` } })),
   } as unknown as SNSEvent;
 }
 
@@ -67,7 +67,10 @@ function setup() {
     releaseMessage: vi.fn(async () => undefined),
   } as unknown as Repos;
   const agent = {
-    invoke: vi.fn(async () => ({ text: 'Tu paquete está en Palermo', location: { lat: -34.5, lng: -58.4, name: 'HOP Palermo', address: 'Calle 1' } })),
+    invoke: vi.fn(async () => ({
+      text: 'Tu paquete está en Palermo',
+      location: { lat: -34.5, lng: -58.4, name: 'HOP Palermo', address: 'Calle 1' },
+    })),
   } as unknown as AgentClient;
   const sender = {
     sendText: vi.fn(async () => ({ messageId: 'out.1' })),
@@ -220,7 +223,16 @@ describe('inbound-router', () => {
     const statuses = JSON.stringify({
       messageId: 'x',
       whatsAppWebhookEntry: JSON.stringify({
-        changes: [{ value: { statuses: [{ id: 'wamid.s1', status: 'read' }, { id: 'wamid.s2', status: 'failed', errors: [{ code: 131047 }] }] } }],
+        changes: [
+          {
+            value: {
+              statuses: [
+                { id: 'wamid.s1', status: 'read' },
+                { id: 'wamid.s2', status: 'failed', errors: [{ code: 131047 }] },
+              ],
+            },
+          },
+        ],
       }),
     });
     await ctx.handler(snsEvent(statuses, 'no json', JSON.stringify({ foo: 1 })));

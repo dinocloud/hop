@@ -102,7 +102,7 @@ async function batchPut(doc: DynamoDBDocumentClient, table: string, items: objec
   for (let i = 0; i < items.length; i += 25) {
     const chunk = items.slice(i, i + 25);
     let unprocessed: Record<string, unknown> | undefined = {
-      [table]: chunk.map((Item) => ({ PutRequest: { Item } })),
+      [table]: chunk.map((item) => ({ PutRequest: { Item: item } })),
     };
     let attempts = 0;
     while (unprocessed && Object.keys(unprocessed).length > 0) {
