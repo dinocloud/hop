@@ -2,6 +2,7 @@ import { tool } from '@strands-agents/sdk';
 import { z } from 'zod';
 import type { Repos } from '../../src/lib/dynamo.js';
 import { InvalidPhoneError } from '../../src/lib/phone.js';
+import { calendarDaysUntilInBuenosAires, formatDayInBuenosAires } from '../../src/lib/time.js';
 import type { HopPoint, Package } from '../../src/lib/types.js';
 
 /**
@@ -16,19 +17,33 @@ export interface ToolDeps {
   repos: Repos;
   /** Teléfono E.164 del cliente que está escribiendo (el `from` de WhatsApp). */
   phone: string;
+  now?: () => Date;
 }
 
-/** Lo que el modelo ve de un paquete. Sin teléfono ni datos internos. */
-export function presentPackage(pkg: Package): Record<string, unknown> {
+/**
+ * Lo que el modelo ve de un paquete. Sin teléfono ni datos internos.
+ * Las fechas van ya escritas en hora de Buenos Aires: el plazo vence a las 23:59 de BA, que en
+ * ISO UTC es el día siguiente, y el modelo no tiene por qué saber convertirlo ni qué día es hoy.
+ */
+export function presentPackage(pkg: Package, now: Date = new Date()): Record<string, unknown> {
+  const deadline = parseDate(pkg.deadlineAt);
+  const scheduled = parseDate(pkg.scheduledAt);
   return {
     trackingId: pkg.trackingId,
     customerName: pkg.customerName,
     status: pkg.status,
     hopPointId: pkg.hopPointId ?? null,
-    deadlineAt: pkg.deadlineAt ?? null,
-    scheduledAt: pkg.scheduledAt ?? null,
+    deadlineLocal: deadline ? formatDayInBuenosAires(deadline) : null,
+    daysLeft: deadline ? calendarDaysUntilInBuenosAires(deadline, now) : null,
+    scheduledLocal: scheduled ? formatDayInBuenosAires(scheduled) : null,
     updatedAt: pkg.updatedAt,
   };
+}
+
+function parseDate(iso: string | undefined): Date | undefined {
+  if (!iso) return undefined;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
 export function presentHopPoint(hop: HopPoint): Record<string, unknown> {
@@ -43,6 +58,7 @@ export function presentHopPoint(hop: HopPoint): Record<string, unknown> {
 }
 
 export function createTools(deps: ToolDeps) {
+  const now = deps.now ?? (() => new Date());
   const getMyPackages = tool({
     name: 'get_my_packages',
     description:
@@ -53,7 +69,7 @@ export function createTools(deps: ToolDeps) {
     callback: async ({ limit }) => {
       try {
         const packages = await deps.repos.getPackagesByPhone(deps.phone, limit);
-        return { packages: packages.map(presentPackage) };
+        return { packages: packages.map((pkg) => presentPackage(pkg, now())) };
       } catch (err) {
         if (err instanceof InvalidPhoneError) return { packages: [], error: 'Teléfono de la sesión inválido' };
         throw err;
@@ -75,7 +91,7 @@ export function createTools(deps: ToolDeps) {
     callback: async ({ trackingId }) => {
       const pkg = await deps.repos.getPackage(trackingId.toUpperCase());
       if (!pkg || pkg.phone !== deps.phone) return { found: false };
-      return { found: true, package: presentPackage(pkg) };
+      return { found: true, package: presentPackage(pkg, now()) };
     },
   });
 
