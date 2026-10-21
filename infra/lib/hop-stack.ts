@@ -24,6 +24,8 @@ export interface HopStackProps extends cdk.StackProps {
   readonly templateName: string;
   /** Código de idioma con el que se aprobó la plantilla (ej. `es_AR`). */
   readonly templateLanguage: string;
+  /** Versión de la Cloud API de Meta para `SendWhatsAppMessage` (ej. `v23.0`). */
+  readonly metaApiVersion: string;
 }
 
 /** Prefijo de todos los recursos: la cuenta es compartida con otros proyectos. */
@@ -56,7 +58,7 @@ export class HopStack extends cdk.Stack {
 
   constructor(scope: Construct, id: string, props: HopStackProps) {
     super(scope, id, props);
-    const { stage, templateName, templateLanguage } = props;
+    const { stage, templateName, templateLanguage, metaApiVersion } = props;
 
     // ----------------------------------------------------------------------
     // Configuración externa (setup de WhatsApp). Se resuelve en deploy desde SSM.
@@ -135,6 +137,7 @@ export class HopStack extends cdk.Stack {
       [ENV.ORIGINATION_PHONE_NUMBER_ID]: originationPhoneNumberId,
       [ENV.TEMPLATE_NAME]: templateName,
       [ENV.TEMPLATE_LANGUAGE]: templateLanguage,
+      [ENV.META_API_VERSION]: metaApiVersion,
       POWERTOOLS_LOG_LEVEL: 'INFO',
       NODE_OPTIONS: '--enable-source-maps',
     };
