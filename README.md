@@ -65,6 +65,8 @@ test/                vitest: infra (assertions) + unit
 ```bash
 npm ci
 npm run typecheck   # tsc
+npm run lint        # ESLint (typescript-eslint + nombres en camelCase)
+npm run format      # Prettier (ancho 140, comillas simples); CI corre format:check
 npm test            # vitest
 npm run synth       # arma el bundle del agente y corre cdk synth --strict con cdk-nag (sin credenciales)
 ```
