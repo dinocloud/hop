@@ -81,6 +81,8 @@ npm run synth       # cdk synth --strict con cdk-nag (sin credenciales)
 
 Sobre el rol: su trust acepta **únicamente** tokens de push a `main` del repo `dinocloud/hop` (ni environments, ni PRs, ni otras ramas) y solo puede asumir los roles de bootstrap de CDK de la región. Ojo: el rol de ejecución de CloudFormation del bootstrap (`cfn-exec-role`) tiene AdministratorAccess en la cuenta, como en cualquier bootstrap por defecto, así que **quien pueda mergear a `main` puede desplegar cualquier cosa en la cuenta compartida**. Por eso `main` tiene que estar protegida en GitHub: PR obligatorio con al menos una revisión y sin push directo.
 
+El repo usa *immutable subjects* de OIDC (los repos nuevos de GitHub vienen así): el `sub` del token es `repo:dinocloud@20630168/hop@1417116948:ref:refs/heads/main`, no `repo:dinocloud/hop:...`. El prefijo está en el contexto `hop:githubSubjectPrefix` de `cdk.json`. Se puede consultar con `gh api repos/dinocloud/hop/actions/oidc/customization/sub` (campo `sub_claim_prefix`).
+
 **Setup único** (una sola vez, lo hace alguien con acceso a la cuenta):
 
 1. Desplegar el rol OIDC. Es el único deploy manual del proyecto; reutiliza el proveedor OIDC de GitHub que ya existe en la cuenta.
@@ -108,7 +110,7 @@ Detalles que importan:
 - La ventana local se cierra 5 minutos antes que la de Meta, como margen para reintentos y relojes.
 - Los textos de más de 4096 caracteres se parten en varios mensajes; los parámetros de plantilla se sanean (Meta rechaza vacíos, saltos de línea y tabs).
 - El cliente del SDK no reintenta: `SendWhatsAppMessage` no es idempotente y un timeout después de aceptado duplicaría el mensaje.
-- Configuración por variables de entorno que el stack llena: `ORIGINATION_PHONE_NUMBER_ID` (desde SSM), `TEMPLATE_NAME`, `TEMPLATE_LANGUAGE` (contexto `hop:templateLanguage`, tiene que coincidir con el idioma con el que se aprobó la plantilla) y `META_API_VERSION` (opcional).
+- Configuración por variables de entorno que el stack llena: `ORIGINATION_PHONE_NUMBER_ID` (desde SSM), `TEMPLATE_NAME`, `TEMPLATE_LANGUAGE` (contexto `hop:templateLanguage`, tiene que coincidir con el idioma con el que se aprobó la plantilla) y `META_API_VERSION` (contexto `hop:metaApiVersion`, hoy `v23.0`; AWS acepta la v20 en adelante y Meta retira cada versión a los dos años, más o menos).
 - Los errores no guardan el número completo: Powertools vuelca las propiedades del error al log.
 
 `src/lib/dynamo.ts` expone los repos tipados de las cuatro tablas. Para los mensajes entrantes: `claimMessage(messageId)` reclama el mensaje con un lease (tabla `hop-hackathon-inbound-messages`, TTL 7 días) y devuelve `false` si ya se procesó o se está procesando; `completeMessage` lo marca `DONE` al terminar. Si la Lambda falla a mitad de camino no se marca nada y el reintento lo retoma cuando vence el lease, así no se pierden respuestas. `touchInbound(phone, inboundAt)` renueva la ventana con la fecha del mensaje y asigna `sessionId`.
@@ -144,14 +146,17 @@ Respuestas:
 | `202 { trackingId, status, notified, messageId?, duplicate? }` | Estado guardado. Con `READY_AT_HOP` se guarda `deadlineAt` (fin del día N en hora de Buenos Aires) y se envía `paquete_listo` con `[nombre, Punto HOP, días]`. |
 | `400` | Body, path o Punto HOP inválidos. |
 | `404` | El paquete no existe. |
-| `409` | Transición no permitida (`DELIVERED` y `RETURNED` son terminales) o el paquete cambió entre la lectura y la escritura: reintentar. |
-| `503` | El envío de la plantilla falló por una causa transitoria (throttling, timeout). El estado quedó guardado; reintentar es seguro. |
+| `409` | El paquete cambió entre la lectura y la escritura: reintentar. |
+| `422` | Transición no permitida (`DELIVERED` y `RETURNED` son terminales): no reintentar. |
+| `503` | El envío de la plantilla falló por una causa transitoria (throttling, 5xx). El estado quedó guardado; reintentar es seguro. |
 
 Garantías:
-- **Idempotente**: un `READY_AT_HOP` repetido para el mismo punto no reenvía la plantilla ni corre el plazo (`duplicate: true`). Si cambia el punto, se avisa de nuevo con plazo nuevo.
-- El resultado del aviso queda en el paquete (`readyNotificationStatus: SENT | FAILED`, `readyMessageId`, `readyNotificationError`).
-- Si el envío falla de forma permanente (por ejemplo la plantilla todavía no está aprobada en Meta) responde `202` con `notified: false`, registra `FAILED` y emite la métrica `HopHackathon/TemplateSendFailed`, que tiene alarma (`hop-hackathon-template-send-failed`).
-- La Lambda tiene timeout de 20 s y los clientes del SDK 5 s por request, siempre por debajo de los 29 s de API Gateway.
+- **Idempotente**: un `READY_AT_HOP` repetido para el mismo punto no reenvía la plantilla ni corre el plazo (`duplicate: true`). Si cambia el punto, se avisa de nuevo con plazo nuevo. Un `DELIVERED` o `RETURNED` repetido (webhook reintentado) responde `202` con `duplicate: true` sin escribir.
+- **Plazo y aviso coinciden**: cuando el aviso todavía no salió (por ejemplo un paquete que el seed dejó en `READY_AT_HOP`), el plazo se calcula de nuevo con los `deadlineDays` del body, que son los días que dice la plantilla.
+- El resultado del aviso queda en el paquete (`readyNotificationStatus: SENT | FAILED`, `readyMessageId`, `readyNotificationError`). Si la plantilla sale pero falla ese registro, igual responde `notified: true` y lo deja en el log.
+- Si el envío falla de forma permanente (por ejemplo la plantilla todavía no está aprobada en Meta) responde `202` con `notified: false`, registra `FAILED` y emite la métrica `HopHackathon/TemplateSendFailed`, que tiene alarma (`hop-hackathon-template-send-failed`). Los fallos transitorios no cuentan para esa métrica.
+- Un timeout o corte de conexión durante el envío es ambiguo (el mensaje pudo salir): responde `202` con `notified: false` y no pide reintento, para no duplicar el aviso. Repetir el `READY_AT_HOP` a mano lo reenvía.
+- La Lambda tiene timeout de 20 s y los clientes del SDK cortan a los 5 s por request (`throwOnRequestTimeout`), siempre por debajo de los 29 s de API Gateway.
 
 ## Agente en AgentCore Runtime (`agent/`)
 
