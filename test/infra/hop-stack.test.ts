@@ -20,6 +20,8 @@ function synth(): Template {
     stackName: 'hop-hackathon-dev',
     stage: 'dev',
     templateName: 'paquete_listo',
+    templateLanguage: 'es_AR',
+    metaApiVersion: 'v23.0',
   });
   return Template.fromStack(stack);
 }
@@ -42,15 +44,34 @@ function allStatements(template: Template): Statement[] {
 describe('HopStack', () => {
   const template = synth();
 
+  it('pasa la versión de la Cloud API de Meta del contexto a las dos Lambdas', () => {
+    const fns = template.findResources('AWS::Lambda::Function', {
+      Properties: { Environment: { Variables: { META_API_VERSION: 'v23.0' } } },
+    });
+    expect(Object.keys(fns)).toHaveLength(2);
+  });
+
   it('crea las tres tablas con PITR, on-demand y prefijo del proyecto', () => {
-    template.resourceCountIs('AWS::DynamoDB::Table', 3);
-    for (const name of ['hop-hackathon-packages', 'hop-hackathon-hop-points', 'hop-hackathon-conversations']) {
+    template.resourceCountIs('AWS::DynamoDB::Table', 4);
+    for (const name of [
+      'hop-hackathon-packages',
+      'hop-hackathon-hop-points',
+      'hop-hackathon-conversations',
+      'hop-hackathon-inbound-messages',
+    ]) {
       template.hasResourceProperties('AWS::DynamoDB::Table', {
         TableName: name,
         BillingMode: 'PAY_PER_REQUEST',
         PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
       });
     }
+  });
+
+  it('la tabla de mensajes entrantes se limpia por TTL', () => {
+    template.hasResourceProperties('AWS::DynamoDB::Table', {
+      TableName: 'hop-hackathon-inbound-messages',
+      TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true },
+    });
   });
 
   it('indexa paquetes por teléfono', () => {
@@ -120,6 +141,8 @@ describe('HopStack', () => {
     expect(hook?.Action).toEqual(['dynamodb:GetItem', 'dynamodb:UpdateItem']);
     const router = allStatements(template).find((s) => JSON.stringify(s.Resource).includes('ConversationsTable'));
     expect(router?.Action).toEqual(['dynamodb:GetItem', 'dynamodb:UpdateItem']);
+    const dedupe = allStatements(template).find((s) => JSON.stringify(s.Resource).includes('InboundMessagesTable'));
+    expect(dedupe?.Action).toEqual('dynamodb:UpdateItem');
     const forbidden = allStatements(template).filter((s) => {
       const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
       return actions.some((a) => ['dynamodb:DeleteItem', 'dynamodb:Scan', 'dynamodb:BatchWriteItem', 'dynamodb:*'].includes(a));
