@@ -252,11 +252,13 @@ export function createRepos(deps: ReposDeps = {}) {
 
   /**
    * Reclama un mensaje entrante para procesarlo exactamente una vez.
-   * - `true`: nadie lo procesó, o un intento anterior quedó en PROCESSING con el lease vencido
-   *   (la Lambda falló a mitad de camino): hay que procesarlo.
-   * - `false`: ya está DONE o lo está procesando otra invocación ahora mismo: descartar.
-   * Siempre terminar con `completeMessage` si salió bien; si falla, no marcar nada y dejar
-   * que el reintento lo retome cuando venza el lease.
+   * - `'claimed'`: nadie lo procesó, o un intento anterior quedó en PROCESSING con el lease
+   *   vencido (la Lambda falló a mitad de camino): hay que procesarlo.
+   * - `'done'`: ya se procesó: descartar como duplicado.
+   * - `'in_progress'`: otra invocación lo tiene con el lease vivo (o murió sin liberarlo):
+   *   relanzar para que Lambda reintente más tarde, nunca descartarlo.
+   * Siempre terminar con `completeMessage` si salió bien, o `releaseMessage` si falló antes de
+   * enviar algo, para que el reintento lo retome sin esperar a que venza el lease.
    */
   async function claimMessage(messageId: string, now = new Date()): Promise<ClaimResult> {
     const nowSec = Math.floor(now.getTime() / 1000);

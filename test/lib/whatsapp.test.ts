@@ -192,3 +192,19 @@ describe('createWhatsAppSender', () => {
     expect(social.commandCalls(SendWhatsAppMessageCommand)).toHaveLength(0);
   });
 });
+
+describe('versión de la Cloud API de Meta', () => {
+  beforeEach(() => {
+    social.reset();
+    social.on(SendWhatsAppMessageCommand).resolves({ messageId: 'wamid.1' });
+  });
+
+  it('sin configuración manda una versión vigente de la Cloud API (v23.0)', async () => {
+    await senderWith(openWindow).sendText(PHONE, 'hola');
+    expect(social.commandCalls(SendWhatsAppMessageCommand)[0]?.args[0].input.metaApiVersion).toBe('v23.0');
+  });
+
+  it('rechaza una versión con formato inválido antes de llamar a AWS', () => {
+    expect(() => senderWith(openWindow, { metaApiVersion: '23' })).toThrow(/META_API_VERSION/);
+  });
+});

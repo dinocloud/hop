@@ -5,7 +5,10 @@ import { InvalidPhoneError, fromWaId } from './phone.js';
  * Parseo del evento que AWS End User Messaging Social publica en SNS por cada webhook de
  * WhatsApp. El `Message` de SNS es un JSON con `whatsAppWebhookEntry`: el `entry` de la
  * Cloud API de Meta serializado como string. Un entry puede traer mensajes (`messages`) o
- * estados de entrega (`statuses`); acá interesan los mensajes de texto y los estados `failed`.
+ * estados de entrega (`statuses`). Interesan:
+ * - los mensajes de texto y los taps en botones (de plantilla o interactivos), que se tratan como texto;
+ * - los mensajes de otro tipo que hay que contestar (audio, imagen...), para decir que solo se lee texto;
+ * - los estados `failed`.
  *
  * Formato observado en la cuenta (statuses y messages comparten la estructura):
  * {
@@ -27,8 +30,21 @@ const WebhookMessageSchema = z
     timestamp: z.coerce.number().int().positive(),
     type: z.string(),
     text: z.object({ body: z.string() }).optional(),
+    /** Tap en un botón de respuesta rápida de una plantilla. */
+    button: z.object({ text: z.string() }).passthrough().optional(),
+    interactive: z
+      .object({
+        button_reply: z.object({ title: z.string() }).passthrough().optional(),
+        list_reply: z.object({ title: z.string() }).passthrough().optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough();
+type WebhookMessage = z.infer<typeof WebhookMessageSchema>;
+
+/** Tipos que no se pueden leer pero merecen respuesta: el cliente mandó algo y espera que le contesten. */
+const REPLY_TO_UNSUPPORTED_TYPES = new Set(['image', 'audio', 'video', 'document', 'sticker', 'location', 'contacts']);
 
 const WebhookStatusSchema = z
   .object({
@@ -78,6 +94,16 @@ export interface InboundTextMessage {
   sentAt: Date;
 }
 
+/** Mensaje que no es texto pero se contesta (con un texto fijo). */
+export interface InboundUnsupportedMessage {
+  messageId: string;
+  /** Teléfono del cliente en E.164 con `+`. */
+  from: string;
+  /** Tipo de Meta: `audio`, `image`, `video`... */
+  type: string;
+  sentAt: Date;
+}
+
 export interface InboundStatus {
   /** `id` del mensaje saliente al que refiere. */
   messageId: string;
@@ -88,7 +114,9 @@ export interface InboundStatus {
 
 export interface ParsedInboundEvent {
   textMessages: InboundTextMessage[];
-  /** Mensajes de otro tipo (imagen, audio, botón...) que no se procesan. */
+  /** Mensajes de otro tipo que reciben un texto fijo (ver `REPLY_TO_UNSUPPORTED_TYPES`). */
+  unsupportedMessages: InboundUnsupportedMessage[];
+  /** Mensajes que no se contestan: reacciones, mensajes de sistema, texto vacío. */
   otherMessages: number;
   /** Mensajes o statuses con forma inesperada o teléfono inválido. */
   invalidItems: number;
@@ -124,7 +152,7 @@ export function parseInboundEvent(snsMessage: string): ParsedInboundEvent {
   const entry = WebhookEntrySchema.safeParse(entryRaw);
   if (!entry.success) throw new InboundEventError('whatsAppWebhookEntry no tiene el formato de la Cloud API');
 
-  const result: ParsedInboundEvent = { textMessages: [], otherMessages: 0, invalidItems: 0, statuses: [] };
+  const result: ParsedInboundEvent = { textMessages: [], unsupportedMessages: [], otherMessages: 0, invalidItems: 0, statuses: [] };
   for (const change of entry.data.changes) {
     for (const rawStatus of change.value.statuses ?? []) {
       const status = WebhookStatusSchema.safeParse(rawStatus);
@@ -144,8 +172,8 @@ export function parseInboundEvent(snsMessage: string): ParsedInboundEvent {
         result.invalidItems += 1;
         continue;
       }
-      const body = message.data.text?.body?.trim();
-      if (message.data.type !== 'text' || !body) {
+      const text = messageText(message.data);
+      if (!text && !REPLY_TO_UNSUPPORTED_TYPES.has(message.data.type)) {
         result.otherMessages += 1;
         continue;
       }
@@ -159,15 +187,22 @@ export function parseInboundEvent(snsMessage: string): ParsedInboundEvent {
         }
         throw err;
       }
-      result.textMessages.push({
-        messageId: message.data.id,
-        from,
-        text: body,
-        sentAt: new Date(message.data.timestamp * 1000),
-      });
+      const sentAt = new Date(message.data.timestamp * 1000);
+      if (text) result.textMessages.push({ messageId: message.data.id, from, text, sentAt });
+      else result.unsupportedMessages.push({ messageId: message.data.id, from, type: message.data.type, sentAt });
     }
   }
   return result;
+}
+
+/** El texto de un mensaje, o lo que dice el botón que tocó el cliente. */
+function messageText(message: WebhookMessage): string | undefined {
+  let raw: string | undefined;
+  if (message.type === 'text') raw = message.text?.body;
+  else if (message.type === 'button') raw = message.button?.text;
+  else if (message.type === 'interactive') raw = message.interactive?.button_reply?.title ?? message.interactive?.list_reply?.title;
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 /** Arma un evento con el mismo formato, para tests y para `scripts/publish-inbound.ts`. */

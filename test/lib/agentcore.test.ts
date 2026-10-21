@@ -12,7 +12,7 @@ function response(body: string, statusCode = 200) {
 }
 
 describe('createAgentClient', () => {
-  const client = createAgentClient({ client: new BedrockAgentCoreClient({}), agentRuntimeArn: ARN });
+  const client = createAgentClient({ client: new BedrockAgentCoreClient({}), agentRuntimeArn: ARN, retryDelaysMs: [0, 0, 0] });
   beforeEach(() => agentcore.reset());
 
   it('invoca el runtime con el payload del contrato y devuelve la respuesta validada', async () => {
@@ -40,8 +40,30 @@ describe('createAgentClient', () => {
     await expect(client.invoke({ phone: '+5491112345678', text: 'hola' }, SESSION)).rejects.toThrow(/contrato/);
   });
 
-  it('propaga errores del SDK (throttling, acceso)', async () => {
+  it('propaga sin reintentar los errores que no son de sesión ocupada ni throttling', async () => {
     agentcore.on(InvokeAgentRuntimeCommand).rejects(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
     await expect(client.invoke({ phone: '+5491112345678', text: 'hola' }, SESSION)).rejects.toThrow('denied');
+    expect(agentcore.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(1);
+  });
+
+  it('reintenta el 409 de una sesión que AgentCore todavía está levantando', async () => {
+    agentcore
+      .on(InvokeAgentRuntimeCommand)
+      .rejectsOnce(
+        Object.assign(new Error('Session operation in progress, please retry'), {
+          name: 'RetryableConflictException',
+          $metadata: { httpStatusCode: 409 },
+        }),
+      )
+      .resolves(response(JSON.stringify({ text: 'ok', location: null })) as never);
+    const reply = await client.invoke({ phone: '+5491112345678', text: 'hola' }, SESSION);
+    expect(reply.text).toBe('ok');
+    expect(agentcore.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(2);
+  });
+
+  it('se rinde después de agotar los reintentos de throttling', async () => {
+    agentcore.on(InvokeAgentRuntimeCommand).rejects(Object.assign(new Error('slow down'), { name: 'ThrottlingException' }));
+    await expect(client.invoke({ phone: '+5491112345678', text: 'hola' }, SESSION)).rejects.toThrow('slow down');
+    expect(agentcore.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(4);
   });
 });

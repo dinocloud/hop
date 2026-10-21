@@ -5,6 +5,8 @@ import type { HopPoint, Package } from '../../src/lib/types.js';
 
 const PHONE = '+5491112345678';
 const OTHER = '+5491187654321';
+/** Sábado 17/10, 09:00 en Buenos Aires. */
+const NOW = new Date('2026-10-17T12:00:00Z');
 
 const palermo: HopPoint = {
   id: 'hop-palermo',
@@ -34,7 +36,7 @@ function setup() {
     getPackage: vi.fn(async (id: string) => ({ 'HOP-0001': mine, 'HOP-0002': theirs })[id]),
     getHopPoint: vi.fn(async (id: string) => (id === 'hop-palermo' ? palermo : undefined)),
   } as unknown as Repos;
-  const tools = createTools({ repos, phone: PHONE });
+  const tools = createTools({ repos, phone: PHONE, now: () => NOW });
   type AnyTool = { invoke(input: unknown): Promise<unknown> };
   const byName: Record<string, AnyTool> = Object.fromEntries(tools.map((t) => [t.name, t as unknown as AnyTool]));
   return { repos, byName };
@@ -56,12 +58,20 @@ describe('tools del agente', () => {
       customerName: 'Ana',
       status: 'READY_AT_HOP',
       hopPointId: 'hop-palermo',
-      deadlineAt: '2026-10-23T02:59:59.000Z',
-      scheduledAt: null,
+      deadlineLocal: 'jueves 22 de octubre',
+      daysLeft: 5,
+      scheduledLocal: null,
       updatedAt: '2026-10-17T12:00:00Z',
     });
     expect(JSON.stringify(res)).not.toContain('5678');
     expect(JSON.stringify(res)).not.toContain('wamid');
+  });
+
+  it('las fechas llegan al modelo ya escritas en hora de Buenos Aires, sin el ISO en UTC que corre el día', async () => {
+    const { byName } = setup();
+    const res = await byName['get_package_by_tracking']!.invoke({ trackingId: 'HOP-0001' });
+    expect(res).toMatchObject({ found: true, package: { deadlineLocal: 'jueves 22 de octubre', daysLeft: 5 } });
+    expect(JSON.stringify(res)).not.toContain('T02:59:59');
   });
 
   it('get_package_by_tracking solo devuelve paquetes del cliente de la sesión', async () => {

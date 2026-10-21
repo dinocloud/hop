@@ -8,6 +8,7 @@ import { OutsideWindowError, type WhatsAppSender } from '../../src/lib/whatsapp.
 import {
   METRICS,
   MessageInProgressError,
+  UNSUPPORTED_MESSAGE_REPLY,
   TimeBudgetExceededError,
   createHandler,
   type RouterMetrics,
@@ -43,6 +44,17 @@ function multiInbound(...texts: string[]): string {
   return JSON.stringify(raw);
 }
 
+/** Un mensaje de otro tipo (audio, imagen...) con el formato de Meta. */
+function mediaInbound(type: string, messageId = 'wamid.M'): string {
+  const raw = JSON.parse(inbound('x', messageId));
+  const entry = JSON.parse(raw.whatsAppWebhookEntry);
+  entry.changes[0].value.messages = [
+    { from: PHONE.slice(1), id: messageId, timestamp: String(Math.floor(SENT_AT.getTime() / 1000)), type, [type]: { id: 'media-1' } },
+  ];
+  raw.whatsAppWebhookEntry = JSON.stringify(entry);
+  return JSON.stringify(raw);
+}
+
 function lambdaContext(remainingMs = 60_000): Context {
   return { getRemainingTimeInMillis: () => remainingMs } as unknown as Context;
 }
@@ -71,6 +83,17 @@ describe('inbound-router', () => {
   let ctx: ReturnType<typeof setup>;
   beforeEach(() => {
     ctx = setup();
+  });
+
+  it('a un audio o una imagen le contesta que por ahora solo lee texto, sin invocar al agente', async () => {
+    await ctx.handler(snsEvent(mediaInbound('audio')), lambdaContext());
+    expect(ctx.agent.invoke).not.toHaveBeenCalled();
+    expect(ctx.repos.claimMessage).toHaveBeenCalledWith('wamid.M', NOW);
+    expect(ctx.repos.touchInbound).toHaveBeenCalledWith(PHONE, SENT_AT);
+    expect(ctx.sender.sendText).toHaveBeenCalledWith(PHONE, UNSUPPORTED_MESSAGE_REPLY);
+    expect(ctx.sender.sendLocation).not.toHaveBeenCalled();
+    expect(ctx.repos.completeMessage).toHaveBeenCalledWith('wamid.M', NOW);
+    expect(ctx.metricCalls(METRICS.unsupported)).toEqual([[METRICS.unsupported, 'Count', 1]]);
   });
 
   it('camino feliz: reclama, abre la ventana con la fecha del mensaje, consulta al agente con presupuesto y responde texto + ubicación', async () => {

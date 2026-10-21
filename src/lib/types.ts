@@ -21,6 +21,10 @@ export function canTransition(from: PackageStatus, to: PackageStatus): boolean {
   return ALLOWED_TRANSITIONS[from].includes(to);
 }
 
+export function isTerminalStatus(status: PackageStatus): boolean {
+  return ALLOWED_TRANSITIONS[status].length === 0;
+}
+
 export type ReadyNotificationStatus = 'SENT' | 'FAILED';
 
 /** Tabla `hop-hackathon-packages`. PK `trackingId`. GSI `byPhone` (PK `phone`, SK `updatedAt`). */

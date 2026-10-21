@@ -2,7 +2,7 @@ import { Metrics, MetricUnit } from '@aws-lambda-powertools/metrics';
 import type { Context, SNSEvent } from 'aws-lambda';
 import { FALLBACK_REPLY, MAX_REQUEST_TEXT, type AgentReply } from '../../lib/agent-contract.js';
 import { AGENT_REQUEST_TIMEOUT_MS, createAgentClient, type AgentClient } from '../../lib/agentcore.js';
-import { errorInfo, isTransientAwsError } from '../../lib/aws-errors.js';
+import { errorInfo, isAmbiguousSendError, isTransientAwsError } from '../../lib/aws-errors.js';
 import { createRepos, type Repos } from '../../lib/dynamo.js';
 import { InboundEventError, parseInboundEvent, type InboundTextMessage } from '../../lib/inbound-event.js';
 import { logger, maskPhone } from '../../lib/logger.js';
@@ -54,7 +54,11 @@ export const METRICS = {
   deliveryFailed: 'ReplyDeliveryFailed',
   agentFailed: 'AgentFailed',
   replyFailed: 'ReplyFailed',
+  unsupported: 'InboundUnsupported',
 } as const;
+
+/** Respuesta a un audio, una imagen, etc.: el agente solo entiende texto. */
+export const UNSUPPORTED_MESSAGE_REPLY = 'Por ahora solo puedo leer mensajes de texto. Escribime tu consulta y te ayudo.';
 
 /** Margen que se reserva del tiempo restante de la Lambda para enviar la respuesta y cerrar. */
 export const TIME_BUDGET_MARGIN_MS = 12_000;
@@ -74,9 +78,6 @@ export class TimeBudgetExceededError extends Error {
     this.name = 'TimeBudgetExceededError';
   }
 }
-
-/** Errores en los que no se sabe si el mensaje salió: nunca se reintenta el envío. */
-const AMBIGUOUS_SEND_ERRORS = new Set(['TimeoutError', 'RequestTimeout', 'RequestTimeoutException', 'ECONNRESET', 'EPIPE', 'AbortError']);
 
 export function createHandler(deps: RouterDeps) {
   const now = deps.now ?? (() => new Date());
@@ -108,7 +109,7 @@ export function createHandler(deps: RouterDeps) {
       throw err;
     }
     if (parsed.otherMessages > 0) {
-      logger.info('Mensajes no soportados (solo texto)', { snsMessageId, count: parsed.otherMessages });
+      logger.info('Mensajes que no se contestan (reacciones, sistema, vacíos)', { snsMessageId, count: parsed.otherMessages });
       metrics.addMetric(METRICS.ignored, MetricUnit.Count, parsed.otherMessages);
     }
     if (parsed.invalidItems > 0) {
@@ -128,9 +129,15 @@ export function createHandler(deps: RouterDeps) {
     for (const message of parsed.textMessages) {
       await handleMessage(message, remaining);
     }
+    for (const message of parsed.unsupportedMessages) {
+      logger.info('Mensaje que no es texto: se responde un texto fijo', { type: message.type });
+      const asText = { messageId: message.messageId, from: message.from, text: '', sentAt: message.sentAt };
+      await handleMessage(asText, remaining, UNSUPPORTED_MESSAGE_REPLY);
+    }
   }
 
-  async function handleMessage(message: InboundTextMessage, remaining: () => number): Promise<void> {
+  /** `fixedReply` reemplaza al agente (mensajes que no son texto). */
+  async function handleMessage(message: InboundTextMessage, remaining: () => number, fixedReply?: string): Promise<void> {
     logger.appendKeys({ messageId: message.messageId, phone: maskPhone(message.from) });
     try {
       if (remaining() < MIN_TIME_TO_START_MS) {
@@ -159,10 +166,11 @@ export function createHandler(deps: RouterDeps) {
           return;
         }
         const timeoutMs = Math.min(AGENT_REQUEST_TIMEOUT_MS, Math.max(remaining() - TIME_BUDGET_MARGIN_MS, 5_000));
-        const reply = await askAgent(message, conversation.sessionId, timeoutMs);
+        const reply: AgentReply =
+          fixedReply !== undefined ? { text: fixedReply, location: null } : await askAgent(message, conversation.sessionId, timeoutMs);
         sentSomething = await sendReply(message.from, reply);
         await complete(message.messageId);
-        metrics.addMetric(METRICS.processed, MetricUnit.Count, 1);
+        metrics.addMetric(fixedReply !== undefined ? METRICS.unsupported : METRICS.processed, MetricUnit.Count, 1);
       } catch (err) {
         if (sentSomething) {
           // Ya le llegó algo al cliente: no se reintenta para no duplicar.
@@ -219,7 +227,7 @@ export function createHandler(deps: RouterDeps) {
         logger.error('Ventana de 24 h cerrada al responder', { error: errorInfo(err) });
         return false;
       }
-      if (isTransientAwsError(err) && !AMBIGUOUS_SEND_ERRORS.has(errorInfo(err).name)) {
+      if (isTransientAwsError(err) && !isAmbiguousSendError(err)) {
         logger.warn('Envío de la respuesta falló por causa transitoria; Lambda reintenta', { error: errorInfo(err) });
         throw err;
       }

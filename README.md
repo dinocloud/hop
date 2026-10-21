@@ -69,8 +69,10 @@ test/                vitest: infra (assertions) + unit
 npm ci
 npm run typecheck   # tsc
 npm test            # vitest
-npm run synth       # cdk synth --strict con cdk-nag (sin credenciales)
+npm run synth       # arma el bundle del agente y corre cdk synth --strict con cdk-nag (sin credenciales)
 ```
+
+El `app` de `cdk.json` construye `agent/dist` antes de sintetizar, así que `synth`, `diff`, `deploy:ci-role` y `cdk watch` funcionan en un clone limpio y nunca suben un bundle viejo.
 
 ## CI/CD
 
@@ -83,6 +85,8 @@ npm run synth       # cdk synth --strict con cdk-nag (sin credenciales)
 `deploy.yml` asume por OIDC el rol `hop-hackathon-github-deploy` y corre `cdk diff` + `cdk deploy HopHackathonDev --exclusively`. El job solo corre si la ref es `main` (también con `workflow_dispatch`).
 
 Sobre el rol: su trust acepta **únicamente** tokens de push a `main` del repo `dinocloud/hop` (ni environments, ni PRs, ni otras ramas) y solo puede asumir los roles de bootstrap de CDK de la región. Ojo: el rol de ejecución de CloudFormation del bootstrap (`cfn-exec-role`) tiene AdministratorAccess en la cuenta, como en cualquier bootstrap por defecto, así que **quien pueda mergear a `main` puede desplegar cualquier cosa en la cuenta compartida**. Por eso `main` tiene que estar protegida en GitHub: PR obligatorio con al menos una revisión y sin push directo.
+
+El repo usa *immutable subjects* de OIDC (los repos nuevos de GitHub vienen así): el `sub` del token es `repo:dinocloud@20630168/hop@1417116948:ref:refs/heads/main`, no `repo:dinocloud/hop:...`. El prefijo está en el contexto `hop:githubSubjectPrefix` de `cdk.json`. Se puede consultar con `gh api repos/dinocloud/hop/actions/oidc/customization/sub` (campo `sub_claim_prefix`).
 
 **Setup único** (una sola vez, lo hace alguien con acceso a la cuenta):
 
@@ -111,7 +115,7 @@ Detalles que importan:
 - La ventana local se cierra 5 minutos antes que la de Meta, como margen para reintentos y relojes.
 - Los textos de más de 4096 caracteres se parten en varios mensajes; los parámetros de plantilla se sanean (Meta rechaza vacíos, saltos de línea y tabs).
 - El cliente del SDK no reintenta: `SendWhatsAppMessage` no es idempotente y un timeout después de aceptado duplicaría el mensaje.
-- Configuración por variables de entorno que el stack llena: `ORIGINATION_PHONE_NUMBER_ID` (desde SSM), `TEMPLATE_NAME`, `TEMPLATE_LANGUAGE` (contexto `hop:templateLanguage`, tiene que coincidir con el idioma con el que se aprobó la plantilla) y `META_API_VERSION` (opcional).
+- Configuración por variables de entorno que el stack llena: `ORIGINATION_PHONE_NUMBER_ID` (desde SSM), `TEMPLATE_NAME`, `TEMPLATE_LANGUAGE` (contexto `hop:templateLanguage`, tiene que coincidir con el idioma con el que se aprobó la plantilla) y `META_API_VERSION` (contexto `hop:metaApiVersion`, hoy `v23.0`; AWS acepta la v20 en adelante y Meta retira cada versión a los dos años, más o menos).
 - Los errores no guardan el número completo: Powertools vuelca las propiedades del error al log.
 
 `src/lib/dynamo.ts` expone los repos tipados de las cuatro tablas. Para los mensajes entrantes: `claimMessage(messageId)` reclama el mensaje con un lease (tabla `hop-hackathon-inbound-messages`, TTL 7 días) y devuelve `false` si ya se procesó o se está procesando; `completeMessage` lo marca `DONE` al terminar. Si la Lambda falla a mitad de camino no se marca nada y el reintento lo retoma cuando vence el lease, así no se pierden respuestas. `touchInbound(phone, inboundAt)` renueva la ventana con la fecha del mensaje y asigna `sessionId`.
@@ -187,24 +191,27 @@ Respuestas:
 | `202 { trackingId, status, notified, messageId?, duplicate? }` | Estado guardado. Con `READY_AT_HOP` se guarda `deadlineAt` (fin del día N en hora de Buenos Aires) y se envía `paquete_listo` con `[nombre, Punto HOP, días]`. |
 | `400` | Body, path o Punto HOP inválidos. |
 | `404` | El paquete no existe. |
-| `409` | Transición no permitida (`DELIVERED` y `RETURNED` son terminales) o el paquete cambió entre la lectura y la escritura: reintentar. |
-| `503` | El envío de la plantilla falló por una causa transitoria (throttling, timeout). El estado quedó guardado; reintentar es seguro. |
+| `409` | El paquete cambió entre la lectura y la escritura: reintentar. |
+| `422` | Transición no permitida (`DELIVERED` y `RETURNED` son terminales): no reintentar. |
+| `503` | El envío de la plantilla falló por una causa transitoria (throttling, 5xx). El estado quedó guardado; reintentar es seguro. |
 
 Garantías:
-- **Idempotente**: un `READY_AT_HOP` repetido para el mismo punto no reenvía la plantilla ni corre el plazo (`duplicate: true`). Si cambia el punto, se avisa de nuevo con plazo nuevo.
-- El resultado del aviso queda en el paquete (`readyNotificationStatus: SENT | FAILED`, `readyMessageId`, `readyNotificationError`).
-- Si el envío falla de forma permanente (por ejemplo la plantilla todavía no está aprobada en Meta) responde `202` con `notified: false`, registra `FAILED` y emite la métrica `HopHackathon/TemplateSendFailed`, que tiene alarma (`hop-hackathon-template-send-failed`).
-- La Lambda tiene timeout de 20 s y los clientes del SDK 5 s por request, siempre por debajo de los 29 s de API Gateway.
+- **Idempotente**: un `READY_AT_HOP` repetido para el mismo punto no reenvía la plantilla ni corre el plazo (`duplicate: true`). Si cambia el punto, se avisa de nuevo con plazo nuevo. Un `DELIVERED` o `RETURNED` repetido (webhook reintentado) responde `202` con `duplicate: true` sin escribir.
+- **Plazo y aviso coinciden**: cuando el aviso todavía no salió (por ejemplo un paquete que el seed dejó en `READY_AT_HOP`), el plazo se calcula de nuevo con los `deadlineDays` del body, que son los días que dice la plantilla.
+- El resultado del aviso queda en el paquete (`readyNotificationStatus: SENT | FAILED`, `readyMessageId`, `readyNotificationError`). Si la plantilla sale pero falla ese registro, igual responde `notified: true` y lo deja en el log.
+- Si el envío falla de forma permanente (por ejemplo la plantilla todavía no está aprobada en Meta) responde `202` con `notified: false`, registra `FAILED` y emite la métrica `HopHackathon/TemplateSendFailed`, que tiene alarma (`hop-hackathon-template-send-failed`). Los fallos transitorios no cuentan para esa métrica.
+- Un timeout o corte de conexión durante el envío es ambiguo (el mensaje pudo salir): responde `202` con `notified: false` y no pide reintento, para no duplicar el aviso. Repetir el `READY_AT_HOP` a mano lo reenvía.
+- La Lambda tiene timeout de 20 s y los clientes del SDK cortan a los 5 s por request (`throwOnRequestTimeout`), siempre por debajo de los 29 s de API Gateway.
 
 ## Agente en AgentCore Runtime (`agent/`)
 
 El agente de seguimiento para el cliente final corre en **Amazon Bedrock AgentCore Runtime** con **deploy de código directo** (runtime `NODE_22`): el bundle de `agent/src` se sube a S3 como asset y el runtime lo carga, sin contenedor ni Docker. Está escrito con `@strands-agents/sdk` (TypeScript) y el servidor del runtime lo da `bedrock-agentcore/runtime` (`/invocations`, `/ping`, sesión).
 
-- **Contrato** (`src/lib/agent-contract.ts`): request `{ phone, text }`, response `{ text, location | null }`. Si viene `location`, la Lambda inbound manda además el pin de WhatsApp. El modelo devuelve JSON `{ text, hopPointId | null }`; la ubicación la arma el servidor desde DynamoDB, así el modelo no puede inventar coordenadas. Si el modelo no devuelve JSON válido, su texto va tal cual, sin pin. No se fuerza salida estructurada ni se tocan los parámetros de muestreo (los Claude recientes rechazan `toolChoice` forzado y temperaturas distintas de la de fábrica).
-- **Límites**: 6 vueltas de tools, 4096 tokens de salida, 40 s por invocación (la Lambda tiene 60 s), ventana de 12 mensajes por sesión. Una sesión procesa de a un mensaje (los mensajes seguidos del mismo cliente se encolan) y, si una invocación falla, la sesión se descarta para no dejar un hilo inconsistente.
-- **Tools** (`agent/src/tools.ts`): `get_my_packages` (usa el teléfono de la sesión, nunca uno que diga el usuario), `get_package_by_tracking` (solo si el paquete es del cliente) y `get_hop_point`. Las tools no devuelven teléfonos ni datos internos.
+- **Contrato** (`src/lib/agent-contract.ts`): request `{ phone, text }`, response `{ text, location | null }`. Si viene `location`, la Lambda inbound manda además el pin de WhatsApp. El modelo devuelve JSON `{ text, hopPointId | null }`; la ubicación la arma el servidor desde DynamoDB, así el modelo no puede inventar coordenadas, y solo hay pin si el cliente tiene un paquete `READY_AT_HOP` en ese punto. Si el modelo contesta en prosa, el texto va tal cual, sin pin. Si intenta un JSON que no se puede leer (después de escapar los saltos de línea), responde la disculpa: al cliente nunca le llega JSON crudo. No se fuerza salida estructurada ni se tocan los parámetros de muestreo (los Claude recientes rechazan `toolChoice` forzado y temperaturas distintas de la de fábrica).
+- **Límites**: 6 vueltas de tools, 4096 tokens de salida, ventana de 12 mensajes por sesión y 30 s por pedido contados desde que llega, incluida la espera en la cola de la sesión. Queda por debajo de los 40 s del cliente en la Lambda inbound, así la disculpa llega antes de que el cliente corte. Si al salir de la cola quedan menos de 5 s, responde la disculpa sin invocar al modelo. Una sesión procesa de a un mensaje (los mensajes seguidos del mismo cliente se encolan) y, si una invocación falla, la sesión se descarta para no dejar un hilo inconsistente.
+- **Tools** (`agent/src/tools.ts`): `get_my_packages` (usa el teléfono de la sesión, nunca uno que diga el usuario), `get_package_by_tracking` (solo si el paquete es del cliente) y `get_hop_point`. Las tools no devuelven teléfonos ni datos internos. Las fechas van ya escritas en hora de Buenos Aires (`deadlineLocal`, `scheduledLocal`, `daysLeft`), porque el plazo vence a las 23:59 de BA, que en ISO UTC es el día siguiente.
 - **Sesión**: AgentCore aísla cada `sessionId` en su propia instancia; un agente en memoria por sesión conserva el hilo. La Lambda inbound usa el `sessionId` de la conversación.
-- **Modelo**: contexto `hop:agentModelId` (`us.anthropic.claude-sonnet-5-5`), `maxTokens` explícito. El rol del runtime solo puede invocar ese perfil de inferencia y los foundation models de Claude a los que enruta.
+- **Modelo**: contexto `hop:agentModelId` (`us.anthropic.claude-sonnet-5-5`), `maxTokens` explícito y effort `low` (`output_config.effort` por `additionalModelRequestFields`): Sonnet 5.5 piensa por defecto con effort `high`, que en un chat de seguimiento solo suma latencia. El rol del runtime solo puede invocar ese perfil de inferencia y los foundation models de Claude a los que enruta.
 - **Rol del runtime**: trust a `bedrock-agentcore.amazonaws.com` condicionado a esta cuenta y región, lectura de `Packages`/`HopPoints`, lectura del asset, logs del runtime, X-Ray y métricas del namespace `bedrock-agentcore`. Red `PUBLIC` solo por ser dev. Sin authorizer: el único caller es la Lambda, por SigV4.
 - El ARN del runtime queda en el output `AgentRuntimeArn` y en SSM `/hop-hackathon/dev/app/agent-runtime-arn`.
 
@@ -229,18 +236,20 @@ aws bedrock-agentcore invoke-agent-runtime --region us-east-1 \
   --payload "$(echo -n '{"phone":"+549...","text":"¿dónde está mi paquete?"}' | base64)" /dev/stdout
 ```
 
-Si el runtime rechazara el entry point `index.js` para `NODE_22`, se ajusta con la prop `agentEntryPoint` del stack; el servidor cumple el contrato HTTP en el puerto 8080, que es el fallback seguro.
+CloudFormation acepta `NODE_22` en `CodeConfiguration.Runtime` con un entry point `.js` en la raíz del zip, que es lo que arma el bundle único de esbuild.
 
 ## Mensajes entrantes (`src/lambdas/inbound-router`)
 
 SNS (End User Messaging Social) → `inbound-router` → AgentCore → respuesta por WhatsApp.
 
-- **Evento**: el `Message` de SNS trae `whatsAppWebhookEntry`, el `entry` de la Cloud API de Meta como string JSON. Solo se procesan mensajes de texto. Otros tipos (imagen, audio) van a `InboundIgnored`; los `statuses` se cuentan en `InboundStatus` y un `failed` (por ejemplo 131047, fuera de ventana) se loguea con sus códigos y dispara `ReplyDeliveryFailed`. Elementos con forma inesperada van a `InboundInvalid` sin bloquear al resto; un sobre con formato desconocido va a `InboundParseError`. El `from` viene sin `+` y se normaliza con `fromWaId`. Parser tolerante por elemento en `src/lib/inbound-event.ts`.
+- **Evento**: el `Message` de SNS trae `whatsAppWebhookEntry`, el `entry` de la Cloud API de Meta como string JSON. Se procesan los mensajes de texto y los taps en botones (respuesta rápida de una plantilla, botones y listas interactivas), que le llegan al agente como texto. A un audio, imagen, video, documento, sticker, ubicación o contacto se le contesta un texto fijo ("por ahora solo puedo leer mensajes de texto", `InboundUnsupported`); las reacciones, los mensajes de sistema y los textos vacíos se ignoran (`InboundIgnored`). Los `statuses` se cuentan en `InboundStatus` y un `failed` (por ejemplo 131047, fuera de ventana) se loguea con sus códigos y dispara `ReplyDeliveryFailed`. Elementos con forma inesperada van a `InboundInvalid` sin bloquear al resto; un sobre con formato desconocido va a `InboundParseError`. El `from` viene sin `+` y se normaliza con `fromWaId`. Parser tolerante por elemento en `src/lib/inbound-event.ts`.
 - **Exactamente una vez**: `claimMessage(messageId)` con lease de 70 s (más que el timeout de la Lambda). `done` se descarta como duplicado; `in_progress` (una invocación anterior murió con el lease vivo) se relanza para que Lambda lo reintente más tarde en vez de perderlo; `completeMessage` al terminar; `releaseMessage` si falla antes de enviar algo.
 - **Nunca dos respuestas**: una vez que salió algo por WhatsApp, un fallo posterior no relanza (log + `ReplyFailed`). Solo se reintenta si todavía no salió nada, el error es transitorio y no ambiguo (un timeout del envío puede haber llegado igual).
 - **Conversación**: `touchInbound(phone, fechaDelMensaje)` abre la ventana de 24 h (nunca retrocede) y asigna el `sessionId` que se le pasa a AgentCore (así el agente conserva el hilo; el runtime procesa de a un mensaje por sesión). Un mensaje más viejo que la ventana (redrive tardío) no se contesta: `InboundStale`.
 - **Respuesta**: `sendText` con el texto del agente y, si devolvió `location`, `sendLocation` con el pin del Punto HOP. Si el agente falla o responde en modo degradado, se manda el texto de disculpa (`AgentFailed`).
+- **AgentCore**: el 409 `RetryableConflictException` aparece cuando la sesión se está levantando (dos mensajes seguidos en el primer contacto, o después de 15 min sin actividad). Ese error y el throttling se reintentan con esperas de 250, 500 y 1000 ms, dentro del mismo timeout: AgentCore no procesó el pedido, así que no se duplica nada.
 - **Tiempo**: Lambda 60 s. Cada mensaje recibe como máximo 40 s para el agente, acotado por lo que queda de la Lambda menos 12 s de margen; si quedan menos de 15 s no se arranca otro mensaje y se relanza para el reintento.
+- **Mensajes seguidos**: cada mensaje dispara su propia Lambda. El runtime los encola por sesión, pero no garantiza el orden de llegada, y la espera en la cola cuenta contra el tiempo del segundo mensaje: si no alcanza, ese mensaje recibe la disculpa. Para ordenarlos de verdad hace falta SQS FIFO con `MessageGroupId=phone` (pendiente).
 - **Alarmas**: `InboundParseError`, `ReplyFailed`, `ReplyDeliveryFailed` y `AgentFailed` > 0 en 5 minutos, además de la DLQ.
 
 Probar sin teléfono (el número indicado recibe la respuesta real). Requiere `sns:Publish` sobre el topic (y `kms:GenerateDataKey` si el topic estuviera cifrado con una CMK). Ojo: el evento sintético abre la ventana local para ese número; si en Meta nunca escribió, el envío lo acepta AWS pero Meta lo rechaza de forma asíncrona (llega como `status: failed` con 131047 y dispara `ReplyDeliveryFailed`).
