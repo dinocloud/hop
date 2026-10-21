@@ -40,7 +40,7 @@ function textEvent(messages: unknown[]): string {
   });
 }
 
-const empty = { textMessages: [], otherMessages: 0, invalidItems: 0, statuses: [] };
+const empty = { textMessages: [], unsupportedMessages: [], otherMessages: 0, invalidItems: 0, statuses: [] };
 
 describe('parseInboundEvent', () => {
   it('extrae los mensajes de texto con teléfono E.164 con + y fecha del mensaje', () => {
@@ -77,7 +77,7 @@ describe('parseInboundEvent', () => {
     ]);
   });
 
-  it('ignora mensajes que no son de texto y cuenta los inválidos sin bloquear al resto', () => {
+  it('separa los mensajes que no son de texto y cuenta los inválidos sin bloquear al resto', () => {
     const event = textEvent([
       { from: '5491112345678', id: 'wamid.B', timestamp: '1792238400', type: 'image', image: { id: 'x' } },
       { from: '5491112345678', id: 'wamid.C', timestamp: '1792238400', type: 'text', text: { body: '   ' } },
@@ -86,7 +86,10 @@ describe('parseInboundEvent', () => {
       { from: '5491112345678', id: 'wamid.D', timestamp: '1792238401', type: 'text', text: { body: 'hola' } },
     ]);
     const parsed = parseInboundEvent(event);
-    expect(parsed.otherMessages).toBe(2);
+    expect(parsed.unsupportedMessages).toEqual([
+      { messageId: 'wamid.B', from: '+5491112345678', type: 'image', sentAt: new Date('2026-10-17T12:00:00.000Z') },
+    ]);
+    expect(parsed.otherMessages).toBe(1);
     expect(parsed.invalidItems).toBe(2);
     expect(parsed.textMessages.map((m) => m.messageId)).toEqual(['wamid.D']);
   });
@@ -105,5 +108,33 @@ describe('buildInboundEvent', () => {
     const sentAt = new Date('2026-10-17T12:00:00Z');
     const raw = buildInboundEvent({ from: '+5491112345678', text: 'hola', messageId: 'wamid.X', sentAt });
     expect(parseInboundEvent(raw).textMessages).toEqual([{ messageId: 'wamid.X', from: '+5491112345678', text: 'hola', sentAt }]);
+  });
+});
+
+describe('parseInboundEvent con respuestas a botones', () => {
+  it('convierte el tap en un botón de plantilla y las respuestas interactivas en texto', () => {
+    const event = textEvent([
+      { from: '5491112345678', id: 'wamid.B1', timestamp: '1792238400', type: 'button', button: { text: 'Necesito más tiempo', payload: 'MAS_TIEMPO' } },
+      {
+        from: '5491112345678',
+        id: 'wamid.B2',
+        timestamp: '1792238400',
+        type: 'interactive',
+        interactive: { type: 'button_reply', button_reply: { id: 'b1', title: 'Cambiar de punto' } },
+      },
+      {
+        from: '5491112345678',
+        id: 'wamid.B3',
+        timestamp: '1792238400',
+        type: 'interactive',
+        interactive: { type: 'list_reply', list_reply: { id: 'l1', title: 'Punto HOP Belgrano' } },
+      },
+    ]);
+    expect(parseInboundEvent(event).textMessages.map((m) => m.text)).toEqual(['Necesito más tiempo', 'Cambiar de punto', 'Punto HOP Belgrano']);
+  });
+
+  it('ignora reacciones sin contestarlas', () => {
+    const event = textEvent([{ from: '5491112345678', id: 'wamid.R', timestamp: '1792238400', type: 'reaction', reaction: { message_id: 'x', emoji: '👍' } }]);
+    expect(parseInboundEvent(event)).toEqual({ ...empty, otherMessages: 1 });
   });
 });
