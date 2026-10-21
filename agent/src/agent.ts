@@ -1,4 +1,4 @@
-import { Agent, SlidingWindowConversationManager, type Model } from '@strands-agents/sdk';
+import { Agent, BeforeInvocationEvent, SlidingWindowConversationManager, type Model } from '@strands-agents/sdk';
 import { BedrockModel } from '@strands-agents/sdk/models/bedrock';
 import { z } from 'zod';
 import { AgentReplySchema, FALLBACK_REPLY, type AgentReply } from '../../src/lib/agent-contract.js';
@@ -96,13 +96,21 @@ export function createHopAgent(deps: HopAgentDeps): Agent {
       additionalRequestFields: MODEL_REQUEST_FIELDS,
       ...(deps.region ? { region: deps.region } : {}),
     });
-  return new Agent({
+  // Un turno es un mensaje del cliente. Las acciones lo usan para exigir que la confirmación
+  // llegue en el mensaje siguiente al preview, y no en el mismo turno.
+  let turn = 0;
+  const toolDeps = { repos: deps.repos, phone: deps.phone };
+  const agent = new Agent({
     model: model as Model<never>,
     systemPrompt: SYSTEM_PROMPT,
-    tools: [...createTools({ repos: deps.repos, phone: deps.phone }), ...createActionTools({ repos: deps.repos, phone: deps.phone })],
+    tools: [...createTools(toolDeps), ...createActionTools({ ...toolDeps, currentTurn: () => turn })],
     conversationManager: new SlidingWindowConversationManager({ windowSize: CONVERSATION_WINDOW }),
     printer: false,
   });
+  agent.addHook(BeforeInvocationEvent, () => {
+    turn += 1;
+  });
+  return agent;
 }
 
 export class AgentStoppedError extends Error {

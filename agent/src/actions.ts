@@ -10,13 +10,18 @@ import { presentHopPoint, presentPackage, type ToolDeps } from './tools.js';
  * reprogramar la entrega y devolver al remitente. Escriben en `Packages`.
  *
  * Cada acción tiene dos pasos. Con `confirmed: false` valida y devuelve un preview de lo que va
- * a pasar, sin escribir. Con `confirmed: true` escribe, pero solo si ese mismo preview ya se
- * mostró en la sesión: el modelo no puede ejecutar un cambio que el cliente no vio. La escritura
- * exige que el paquete no haya cambiado desde la lectura (`expectedUpdatedAt`).
+ * a pasar, sin escribir. Con `confirmed: true` escribe, pero solo si:
+ * - ese mismo preview se mostró en uno de los dos turnos anteriores, o sea que el cliente lo vio y
+ *   contestó en su mensaje siguiente o después de una aclaración (no vale confirmar en el mismo
+ *   turno, antes de que el cliente lo vea, ni con un preview viejo);
+ * - el paquete no cambió desde el preview (`updatedAt`), y tampoco justo antes de escribir
+ *   (`expectedUpdatedAt`).
  */
 
 export const MAX_EXTENSION_DAYS = 7;
 export const MAX_RESCHEDULE_DAYS = 14;
+/** Mensajes del cliente durante los que vale un preview: el siguiente, o el otro si hubo una aclaración. */
+export const PREVIEW_VALID_TURNS = 2;
 
 const STATUS_LABELS: Record<PackageStatus, string> = {
   IN_TRANSIT: 'en camino',
@@ -46,10 +51,15 @@ interface ActionPlan {
 
 type ActionResult = Record<string, unknown>;
 
-export function createActionTools(deps: ToolDeps) {
+export interface ActionToolDeps extends ToolDeps {
+  /** Turno de la conversación: sube con cada mensaje del cliente (hook de invocación del agente). */
+  currentTurn: () => number;
+}
+
+export function createActionTools(deps: ActionToolDeps) {
   const now = deps.now ?? (() => new Date());
   /** Previews mostrados en esta sesión (el agente vive mientras vive la sesión de AgentCore). */
-  const previews = new Set<string>();
+  const previews = new Map<string, { turn: number; updatedAt: string }>();
 
   async function runAction(
     key: string,
@@ -65,14 +75,28 @@ export function createActionTools(deps: ToolDeps) {
 
     const previewKey = `${key}:${pkg.trackingId}`;
     if (!confirmed) {
-      previews.add(previewKey);
+      previews.set(previewKey, { turn: deps.currentTurn(), updatedAt: pkg.updatedAt });
       return { ok: true, preview: true, ...planned.preview, next: NEXT_STEP };
     }
-    if (!previews.has(previewKey)) {
+    const preview = previews.get(previewKey);
+    if (!preview) {
       return { ok: false, error: 'Primero mostrale al cliente lo que va a pasar (confirmed: false) y esperá que confirme' };
     }
+    const age = deps.currentTurn() - preview.turn;
+    if (age < 1 || age > PREVIEW_VALID_TURNS) {
+      previews.delete(previewKey);
+      return {
+        ok: false,
+        error:
+          'El cliente tiene que confirmar después de ver el preview, en uno de sus próximos mensajes: volvé a mostrarle lo que va a pasar (confirmed: false) y esperá su respuesta',
+      };
+    }
+    if (preview.updatedAt !== pkg.updatedAt) {
+      previews.delete(previewKey);
+      return { ok: false, error: 'El paquete cambió mientras tanto: consultalo de nuevo antes de seguir' };
+    }
     try {
-      const updated = await deps.repos.updatePackageStatus(pkg.trackingId, planned.patch, now(), { expectedUpdatedAt: pkg.updatedAt });
+      const updated = await deps.repos.updatePackageStatus(pkg.trackingId, planned.patch, now(), { expectedUpdatedAt: preview.updatedAt });
       previews.delete(previewKey);
       return { ok: true, package: presentPackage(updated, now()), ...planned.extra };
     } catch (err) {
@@ -99,7 +123,9 @@ export function createActionTools(deps: ToolDeps) {
         if (pkg.status !== 'READY_AT_HOP' || !pkg.deadlineAt)
           return 'Solo se puede extender el plazo de un paquete que está listo para retirar';
         const current = new Date(pkg.deadlineAt);
-        const extended = endOfDayInBuenosAires(current, days);
+        // Si el plazo ya venció, se extiende desde hoy: una fecha pasada no le sirve a nadie.
+        const base = current.getTime() < now().getTime() ? now() : current;
+        const extended = endOfDayInBuenosAires(base, days);
         return {
           preview: {
             action: 'extend_deadline',

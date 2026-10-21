@@ -46,14 +46,20 @@ function setup() {
       updatedAt: NOW.toISOString(),
     })),
   } as unknown as Repos;
-  const tools = createActionTools({ repos, phone: PHONE, now: () => NOW });
+  /** Turno de la conversación: sube con cada mensaje del cliente (en el agente, un hook de Strands). */
+  let turn = 1;
+  const tools = createActionTools({ repos, phone: PHONE, now: () => NOW, currentTurn: () => turn });
   const byName = Object.fromEntries(tools.map((t) => [t.name, t as unknown as AnyTool]));
-  /** Preview y confirmación, como lo hace el modelo después de que el cliente dice que sí. */
+  const nextTurn = () => {
+    turn += 1;
+  };
+  /** Preview, el cliente contesta "sí" en su mensaje siguiente y el modelo confirma. */
   async function confirm(name: string, input: Record<string, unknown>) {
     await byName[name]!.invoke({ ...input, confirmed: false });
+    nextTurn();
     return byName[name]!.invoke({ ...input, confirmed: true });
   }
-  return { repos, byName, confirm };
+  return { repos, store, byName, confirm, nextTurn };
 }
 
 describe('tools de resolución del aviso', () => {
@@ -85,6 +91,13 @@ describe('tools de resolución del aviso', () => {
         { expectedUpdatedAt: '2026-10-21T10:00:00Z' },
       );
       expect(res).toMatchObject({ ok: true, package: { deadlineLocal: 'domingo 25 de octubre', daysLeft: 4 } });
+    });
+
+    it('si el plazo ya venció, extiende desde hoy y no hacia una fecha pasada', async () => {
+      const { store, byName } = setup();
+      store.set('HOP-0001', { ...ready, deadlineAt: '2026-10-18T02:59:59.000Z' }); // venció el sábado 17
+      const res = await byName['extend_deadline']!.invoke({ trackingId: 'HOP-0001', days: 2, confirmed: false });
+      expect(res).toMatchObject({ ok: true, newDeadlineLocal: 'viernes 23 de octubre' });
     });
 
     it('rechaza más de 7 días', async () => {
@@ -188,16 +201,65 @@ describe('tools de resolución del aviso', () => {
     });
 
     it('no ejecuta sin haber mostrado antes el preview de ese mismo cambio', async () => {
-      const { repos, byName } = setup();
+      const { repos, byName, nextTurn } = setup();
       const direct = await byName['extend_deadline']!.invoke({ trackingId: 'HOP-0001', days: 3, confirmed: true });
       expect(direct).toMatchObject({ ok: false, error: expect.stringMatching(/Primero/) });
       await byName['extend_deadline']!.invoke({ trackingId: 'HOP-0001', days: 3, confirmed: false });
+      nextTurn();
       const other = await byName['extend_deadline']!.invoke({ trackingId: 'HOP-0001', days: 4, confirmed: true });
       expect(other).toMatchObject({ ok: false });
       expect(repos.updatePackageStatus).not.toHaveBeenCalled();
     });
 
-    it('si el paquete cambió entre el preview y la confirmación, pide volver a consultarlo', async () => {
+    it('no ejecuta si la confirmación llega en el mismo turno que el preview: el cliente todavía no lo vio', async () => {
+      const { repos, byName } = setup();
+      await byName['request_return']!.invoke({ trackingId: 'HOP-0001', confirmed: false });
+      const sameTurn = await byName['request_return']!.invoke({ trackingId: 'HOP-0001', confirmed: true });
+      expect(sameTurn).toMatchObject({ ok: false });
+      expect(repos.updatePackageStatus).not.toHaveBeenCalled();
+    });
+
+    it('acepta la confirmación un mensaje después de una aclaración ("Belgrano" y después "dale")', async () => {
+      const { repos, byName, nextTurn } = setup();
+      await byName['change_hop_point']!.invoke({ trackingId: 'HOP-0001', hopPointId: 'hop-belgrano', confirmed: false });
+      nextTurn(); // "Belgrano"
+      nextTurn(); // "dale"
+      const res = await byName['change_hop_point']!.invoke({ trackingId: 'HOP-0001', hopPointId: 'hop-belgrano', confirmed: true });
+      expect(res).toMatchObject({ ok: true });
+      expect(repos.updatePackageStatus).toHaveBeenCalledTimes(1);
+    });
+
+    it('un preview de hace más de dos mensajes ya no sirve: hay que volver a mostrarlo', async () => {
+      const { repos, byName, nextTurn } = setup();
+      await byName['request_return']!.invoke({ trackingId: 'HOP-0001', confirmed: false });
+      nextTurn();
+      nextTurn();
+      nextTurn();
+      const stale = await byName['request_return']!.invoke({ trackingId: 'HOP-0001', confirmed: true });
+      expect(stale).toMatchObject({ ok: false });
+      expect(repos.updatePackageStatus).not.toHaveBeenCalled();
+    });
+
+    it('un preview ya usado no sirve para ejecutar dos veces', async () => {
+      const { repos, byName, confirm } = setup();
+      await confirm('extend_deadline', { trackingId: 'HOP-0001', days: 2 });
+      const again = await byName['extend_deadline']!.invoke({ trackingId: 'HOP-0001', days: 2, confirmed: true });
+      expect(again).toMatchObject({ ok: false });
+      expect(repos.updatePackageStatus).toHaveBeenCalledTimes(1);
+    });
+
+    it('si el paquete cambió entre el preview y la confirmación, pide volver a consultarlo y no escribe', async () => {
+      const { repos, store, byName, nextTurn } = setup();
+      await byName['extend_deadline']!.invoke({ trackingId: 'HOP-0001', days: 3, confirmed: false });
+      // Mientras tanto el sistema de envíos vuelve a mandar READY_AT_HOP con otro plazo.
+      store.set('HOP-0001', { ...ready, deadlineAt: '2026-10-29T02:59:59.000Z', updatedAt: '2026-10-21T14:00:00Z' });
+      nextTurn();
+      const res = await byName['extend_deadline']!.invoke({ trackingId: 'HOP-0001', days: 3, confirmed: true });
+      expect(res).toMatchObject({ ok: false, error: expect.stringMatching(/cambió/) });
+      expect(repos.updatePackageStatus).not.toHaveBeenCalled();
+    });
+
+    it('si otro proceso escribe justo antes que la acción, también pide volver a consultarlo', async () => {
       const { repos, confirm } = setup();
       vi.mocked(repos.updatePackageStatus).mockRejectedValueOnce(new ConcurrentUpdateError('HOP-0001'));
       expect(await confirm('extend_deadline', { trackingId: 'HOP-0001', days: 2 })).toMatchObject({
