@@ -219,12 +219,13 @@ Cuando la persona responde al aviso "paquete listo", el agente resuelve sin pasa
 Reglas:
 - **Dos pasos.**
   - Con `confirmed: false` la tool devuelve un preview sin escribir (la fecha nueva, el punto nuevo, el aviso de que la devolución es definitiva), y el agente le pregunta al cliente si confirma.
-  - Con `confirmed: true` escribe, pero solo si ese mismo preview ya se mostró en la sesión. El modelo no puede ejecutar un cambio que el cliente no vio.
-- **Solo paquetes del teléfono de la sesión**, y con control de concurrencia: si el paquete cambió entre el preview y la confirmación, pide volver a consultarlo.
+  - Con `confirmed: true` escribe, pero solo si ese mismo preview se mostró en uno de los dos mensajes anteriores del cliente (el siguiente, o el otro si hubo una aclaración). No vale confirmar en el mismo turno, antes de que el cliente lo vea, ni con un preview viejo.
+- **Solo paquetes del teléfono de la sesión.** Si el paquete cambió entre el preview y la confirmación, no escribe y pide volver a consultarlo.
+- **Plazo vencido:** si ya venció, extender cuenta los días desde hoy.
 - **Cambiar de punto o reprogramar deja el paquete en camino.** Cuando el sistema de envíos lo marca `READY_AT_HOP`, el hook manda el aviso de nuevo, con plazo nuevo.
 - **Si tiene más de un paquete listo o en camino**, el agente pregunta cuál antes de hacer nada. Si piden otra cosa, dice qué sí puede hacer.
 
-Conversaciones de ejemplo. Son respuestas reales del modelo, con datos en memoria, y "hoy" es miércoles 21 de octubre:
+Conversaciones de ejemplo. Son respuestas reales del modelo, abreviadas, corridas contra Bedrock con datos en memoria. "Hoy" es miércoles 21 de octubre:
 
 **Extender el plazo** (HOP-0001, listo en Palermo, vence el jueves 22):
 > **Cliente:** Hola, necesito 3 días más para retirar mi paquete
@@ -236,7 +237,9 @@ Resultado: `deadlineAt` pasa de `2026-10-23T02:59:59.000Z` a `2026-10-26T02:59:5
 
 **Cambiar de punto** (el mismo paquete):
 > **Cliente:** ¿Lo puedo retirar en otro punto más cerca de Belgrano?
-> **Bot:** Sí, tenemos el Punto HOP Belgrano en Av. Cabildo 2040 (Lun a Sáb 10 a 19). Si lo cambiás, el paquete vuelve a quedar en camino y te avisamos cuando llegue, con un plazo nuevo. ¿Confirmás el cambio a Belgrano?
+> **Bot:** Sí, hay un Punto HOP Belgrano en Av. Cabildo 2040 (Lun a Sáb 10 a 19). Ojo: el paquete volvería a quedar en camino hasta que llegue ahí, y te avisan con un plazo nuevo. ¿Confirmás el cambio a Punto HOP Belgrano?
+> **Cliente:** Belgrano
+> **Bot:** Para estar seguros: ¿confirmás que cambie el paquete HOP-0001 al Punto HOP Belgrano (Av. Cabildo 2040)? Respondeme "sí" y lo hago.
 > **Cliente:** dale
 > **Bot:** Listo, cambié tu paquete HOP-0001 al Punto HOP Belgrano. Ahora está en camino y, cuando llegue, te avisamos con el nuevo plazo de retiro.
 
@@ -256,9 +259,11 @@ Resultado: `status: IN_TRANSIT`, `scheduledAt: 2026-10-26T15:00:00.000Z`, sin `d
 > **Cliente:** no, mejor no
 > **Bot:** Listo, no devolví nada. Tu paquete HOP-0003 sigue disponible en Punto HOP Belgrano hasta el sábado 24 de octubre.
 > **Cliente:** pensándolo bien sí, devolvelo
-> **Bot:** Listo, tu paquete HOP-0003 quedó devuelto al remitente.
+> **Bot:** Dale. Te confirmo antes de hacerlo: devolver el paquete HOP-0003 al remitente es definitivo y ya no vas a poder retirarlo. ¿Confirmás la devolución?
+> **Cliente:** sí
+> **Bot:** Listo, el paquete HOP-0003 quedó devuelto al remitente. Ya no está disponible para retirar en el Punto HOP.
 
-Resultado: con el "no" no se escribe nada; con el "sí", `status: RETURNED`.
+Resultado: con el "no" no se escribe nada; con el último "sí", `status: RETURNED`.
 
 ## Mensajes entrantes (`src/lambdas/inbound-router`)
 
