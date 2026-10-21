@@ -1,4 +1,5 @@
 import { SendWhatsAppMessageCommand, SocialMessagingClient } from '@aws-sdk/client-socialmessaging';
+import { SDK_TIMEOUTS } from './aws-errors.js';
 import { maskPhone, normalizePhone } from './phone.js';
 import type { Conversation } from './types.js';
 import { optionalEnv, requireEnv } from './types.js';
@@ -104,7 +105,7 @@ export function sanitizeTemplateParam(value: string): string {
 export function createWhatsAppSender(deps: WhatsAppSenderDeps) {
   // Sin reintentos automáticos: SendWhatsAppMessage no es idempotente y un timeout después
   // de que AWS aceptó el mensaje duplicaría el envío. Los throttlings se ven en el log.
-  const client = deps.client ?? new SocialMessagingClient({ maxAttempts: 1 });
+  const client = deps.client ?? new SocialMessagingClient({ maxAttempts: 1, requestHandler: { ...SDK_TIMEOUTS } });
   const originationPhoneNumberId = deps.originationPhoneNumberId ?? requireEnv('ORIGINATION_PHONE_NUMBER_ID');
   const templateLanguage = deps.templateLanguage ?? optionalEnv('TEMPLATE_LANGUAGE', DEFAULT_TEMPLATE_LANGUAGE);
   const metaApiVersion = deps.metaApiVersion ?? optionalEnv('META_API_VERSION', DEFAULT_META_API_VERSION);

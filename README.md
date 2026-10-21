@@ -123,6 +123,41 @@ AWS_PROFILE=dino-dev npm run send:test -- +5491112345678 text "hola desde HOP"  
 AWS_PROFILE=dino-dev npm run send:test -- +5491112345678 location                  # requiere ventana abierta
 ```
 
+## Hook de estado del paquete
+
+`POST /packages/{trackingId}/status` con header `x-api-key`. Body:
+
+```json
+{ "status": "READY_AT_HOP", "hopPointId": "hop-palermo", "deadlineDays": 5 }
+```
+
+| Campo | Valores | Obligatorio |
+|---|---|---|
+| `status` | `IN_TRANSIT` · `READY_AT_HOP` · `DELIVERED` · `RETURNED` | sí |
+| `hopPointId` | id de `hop-hackathon-hop-points` | solo para `READY_AT_HOP` |
+| `deadlineDays` | 1 a 30 | solo para `READY_AT_HOP` |
+
+`hopPointId` y `deadlineDays` solo se aceptan con `READY_AT_HOP`.
+
+Respuestas:
+
+| Código | Cuándo |
+|---|---|
+| `202 { trackingId, status, notified, messageId?, duplicate? }` | Estado guardado. Con `READY_AT_HOP` se guarda `deadlineAt` (fin del día N en hora de Buenos Aires) y se envía `paquete_listo` con `[nombre, Punto HOP, días]`. |
+| `400` | Body, path o Punto HOP inválidos. |
+| `404` | El paquete no existe. |
+| `409` | El paquete cambió entre la lectura y la escritura: reintentar. |
+| `422` | Transición no permitida (`DELIVERED` y `RETURNED` son terminales): no reintentar. |
+| `503` | El envío de la plantilla falló por una causa transitoria (throttling, 5xx). El estado quedó guardado; reintentar es seguro. |
+
+Garantías:
+- **Idempotente**: un `READY_AT_HOP` repetido para el mismo punto no reenvía la plantilla ni corre el plazo (`duplicate: true`). Si cambia el punto, se avisa de nuevo con plazo nuevo. Un `DELIVERED` o `RETURNED` repetido (webhook reintentado) responde `202` con `duplicate: true` sin escribir.
+- **Plazo y aviso coinciden**: cuando el aviso todavía no salió (por ejemplo un paquete que el seed dejó en `READY_AT_HOP`), el plazo se calcula de nuevo con los `deadlineDays` del body, que son los días que dice la plantilla.
+- El resultado del aviso queda en el paquete (`readyNotificationStatus: SENT | FAILED`, `readyMessageId`, `readyNotificationError`). Si la plantilla sale pero falla ese registro, igual responde `notified: true` y lo deja en el log.
+- Si el envío falla de forma permanente (por ejemplo la plantilla todavía no está aprobada en Meta) responde `202` con `notified: false`, registra `FAILED` y emite la métrica `HopHackathon/TemplateSendFailed`, que tiene alarma (`hop-hackathon-template-send-failed`). Los fallos transitorios no cuentan para esa métrica.
+- Un timeout o corte de conexión durante el envío es ambiguo (el mensaje pudo salir): responde `202` con `notified: false` y no pide reintento, para no duplicar el aviso. Repetir el `READY_AT_HOP` a mano lo reenvía.
+- La Lambda tiene timeout de 20 s y los clientes del SDK cortan a los 5 s por request (`throwOnRequestTimeout`), siempre por debajo de los 29 s de API Gateway.
+
 ## Datos de prueba
 
 ```bash

@@ -34,6 +34,9 @@ export const PREFIX = 'hop-hackathon';
 /** Tope de concurrencia por Lambda: acota el impacto sobre el pool compartido de la cuenta. */
 const RESERVED_CONCURRENCY = 10;
 
+/** Namespace de las métricas custom (Powertools Metrics, EMF). */
+export const METRICS_NAMESPACE = 'HopHackathon';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 /**
@@ -139,6 +142,7 @@ export class HopStack extends cdk.Stack {
       [ENV.TEMPLATE_LANGUAGE]: templateLanguage,
       [ENV.META_API_VERSION]: metaApiVersion,
       POWERTOOLS_LOG_LEVEL: 'INFO',
+      POWERTOOLS_METRICS_NAMESPACE: METRICS_NAMESPACE,
       NODE_OPTIONS: '--enable-source-maps',
     };
 
@@ -203,7 +207,9 @@ export class HopStack extends cdk.Stack {
       return fn;
     };
 
-    this.packageStatusHookFn = makeFunction('package-status-hook', 'package-status-hook', cdk.Duration.seconds(30));
+    // 20 s: siempre por debajo del timeout de integración de API Gateway (29 s), así el caller
+    // recibe la respuesta de la Lambda y no un 504 mientras la Lambda sigue corriendo.
+    this.packageStatusHookFn = makeFunction('package-status-hook', 'package-status-hook', cdk.Duration.seconds(20));
     this.inboundRouterFn = makeFunction('inbound-router', 'inbound-router', cdk.Duration.seconds(60));
 
     // Permisos mínimos por función y por acción. Cada PR amplía solo lo que usa.
@@ -268,6 +274,23 @@ export class HopStack extends cdk.Stack {
       alarmName: `${PREFIX}-inbound-dlq-not-empty`,
       alarmDescription: 'Hay mensajes de WhatsApp sin procesar en la DLQ de hop-hackathon',
       metric: inboundDlq.metricApproximateNumberOfMessagesVisible({ period: cdk.Duration.minutes(1), statistic: 'Maximum' }),
+      threshold: 0,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    // Un aviso "paquete listo" que no sale es un cliente sin notificación: alarma visible.
+    new cloudwatch.Alarm(this, 'TemplateSendFailedAlarm', {
+      alarmName: `${PREFIX}-template-send-failed`,
+      alarmDescription: 'Falló el envío de la plantilla "paquete listo" (ver logs de package-status-hook)',
+      metric: new cloudwatch.Metric({
+        namespace: METRICS_NAMESPACE,
+        metricName: 'TemplateSendFailed',
+        dimensionsMap: { service: 'package-status-hook' },
+        statistic: 'Sum',
+        period: cdk.Duration.minutes(5),
+      }),
       threshold: 0,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       evaluationPeriods: 1,
