@@ -1,5 +1,5 @@
 {
-  "app": "npx tsx infra/bin/hop.ts",
+  "app": "node agent/esbuild.config.mjs && npx tsx infra/bin/hop.ts",
   "watch": {
     "include": ["infra/**", "src/**", "agent/src/**"],
     "exclude": ["README.md", "cdk*.json", "**/*.test.ts", "node_modules", "cdk.out"]
@@ -13,6 +13,7 @@
     "hop:templateName": "paquete_listo",
     "hop:templateLanguage": "es_AR",
     "hop:metaApiVersion": "v23.0",
+    "hop:agentModelId": "us.anthropic.claude-sonnet-5-5",
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
     "@aws-cdk/core:checkSecretUsage": true,
     "@aws-cdk/aws-iam:minimizePolicies": true,

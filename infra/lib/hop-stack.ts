@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as cdk from 'aws-cdk-lib';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
+import * as agentcore from 'aws-cdk-lib/aws-bedrockagentcore';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -9,6 +10,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as destinations from 'aws-cdk-lib/aws-lambda-destinations';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3_assets from 'aws-cdk-lib/aws-s3-assets';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as subs from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
@@ -26,6 +28,12 @@ export interface HopStackProps extends cdk.StackProps {
   readonly templateLanguage: string;
   /** Versión de la Cloud API de Meta para `SendWhatsAppMessage` (ej. `v23.0`). */
   readonly metaApiVersion: string;
+  /** Perfil de inferencia de Bedrock que usa el agente (ej. `us.anthropic.claude-sonnet-5-5`). */
+  readonly agentModelId: string;
+  /** Carpeta con el bundle del agente (`npm run build:agent`). Default: `agent/dist`. */
+  readonly agentCodePath?: string;
+  /** Entry point del código del agente dentro del zip. Default: `['index.js']`. */
+  readonly agentEntryPoint?: string[];
 }
 
 /** Prefijo de todos los recursos: la cuenta es compartida con otros proyectos. */
@@ -58,10 +66,11 @@ export class HopStack extends cdk.Stack {
   readonly packageStatusHookFn: NodejsFunction;
   readonly inboundRouterFn: NodejsFunction;
   readonly api: apigw.RestApi;
+  readonly agentRuntime: agentcore.CfnRuntime;
 
   constructor(scope: Construct, id: string, props: HopStackProps) {
     super(scope, id, props);
-    const { stage, templateName, templateLanguage, metaApiVersion } = props;
+    const { stage, templateName, templateLanguage, metaApiVersion, agentModelId } = props;
 
     // ----------------------------------------------------------------------
     // Configuración externa (setup de WhatsApp). Se resuelve en deploy desde SSM.
@@ -243,6 +252,181 @@ export class HopStack extends cdk.Stack {
     );
 
     // ----------------------------------------------------------------------
+    // Agente en AgentCore Runtime (deploy de código directo, Node 22, sin contenedor)
+    // ----------------------------------------------------------------------
+    // El bundle (`npm run build:agent`) se sube como asset a S3 y el runtime lo carga desde ahí.
+    // Cada cambio de código cambia la clave del asset y genera una versión nueva del runtime.
+    const agentCode = new s3_assets.Asset(this, 'AgentCode', {
+      path: props.agentCodePath ?? path.join(ROOT, 'agent', 'dist'),
+    });
+
+    const agentRole = new iam.Role(this, 'AgentRuntimeRole', {
+      roleName: `${PREFIX}-agent-runtime-role`,
+      description: 'Rol de ejecución del agente HOP en AgentCore Runtime',
+      // Trust acotado a los runtimes de ESTA cuenta y región (anti confused deputy).
+      assumedBy: new iam.ServicePrincipal('bedrock-agentcore.amazonaws.com', {
+        conditions: {
+          StringEquals: { 'aws:SourceAccount': this.account },
+          ArnLike: { 'aws:SourceArn': `arn:aws:bedrock-agentcore:${this.region}:${this.account}:*` },
+        },
+      }),
+    });
+    // Solo el zip del agente, no todo el bucket de assets de CDK (que comparten otros proyectos).
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'ReadAgentCode',
+        actions: ['s3:GetObject', 's3:GetObjectVersion'],
+        resources: [agentCode.bucket.arnForObjects(agentCode.s3ObjectKey)],
+      }),
+    );
+    const agentRuntimeName = `${PREFIX.replace(/-/g, '_')}_agent`;
+    const inferenceProfileArn = `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/${agentModelId}`;
+    // Tools de consulta: solo lectura de paquetes (por tracking y por teléfono vía GSI) y Puntos HOP.
+    this.packagesTable.grant(agentRole, 'dynamodb:GetItem', 'dynamodb:Query');
+    this.hopPointsTable.grant(agentRole, 'dynamodb:GetItem');
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'InvokeClaude',
+        actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+        resources: [inferenceProfileArn],
+      }),
+    );
+    // El perfil `us.` enruta a los foundation models de Claude en las regiones de EE. UU.; se
+    // permiten solo cuando la llamada viene a través de ESTE perfil de inferencia.
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'InvokeClaudeViaProfile',
+        actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+        resources: ['arn:aws:bedrock:*::foundation-model/anthropic.claude-*'],
+        conditions: { StringEquals: { 'bedrock:InferenceProfileArn': inferenceProfileArn } },
+      }),
+    );
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'RuntimeLogs',
+        actions: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents', 'logs:DescribeLogStreams'],
+        resources: [`arn:aws:logs:${this.region}:${this.account}:log-group:/aws/bedrock-agentcore/runtimes/*`],
+      }),
+    );
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'RuntimeDescribeLogGroups',
+        actions: ['logs:DescribeLogGroups'],
+        resources: [`arn:aws:logs:${this.region}:${this.account}:log-group:*`],
+      }),
+    );
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'RuntimeTraces',
+        actions: ['xray:PutTraceSegments', 'xray:PutTelemetryRecords', 'xray:GetSamplingRules', 'xray:GetSamplingTargets'],
+        resources: ['*'],
+      }),
+    );
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'RuntimeMetrics',
+        actions: ['cloudwatch:PutMetricData'],
+        resources: ['*'],
+        conditions: { StringEquals: { 'cloudwatch:namespace': 'bedrock-agentcore' } },
+      }),
+    );
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'WorkloadIdentity',
+        actions: [
+          'bedrock-agentcore:GetWorkloadAccessToken',
+          'bedrock-agentcore:GetWorkloadAccessTokenForJWT',
+          'bedrock-agentcore:GetWorkloadAccessTokenForUserId',
+        ],
+        resources: [
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default`,
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default/workload-identity/${agentRuntimeName}-*`,
+        ],
+      }),
+    );
+    NagSuppressions.addResourceSuppressions(
+      agentRole,
+      [
+        {
+          id: 'AwsSolutions-IAM5',
+          reason:
+            'Permisos estándar del rol de ejecución de AgentCore Runtime: log groups del servicio, workload identity del runtime, X-Ray y métricas (acotadas por namespace), lectura del asset de código y modelos Claude del perfil de inferencia.',
+          appliesTo: [
+            'Resource::*',
+            'Resource::arn:aws:bedrock:*::foundation-model/anthropic.claude-*',
+            `Resource::arn:aws:logs:${this.region}:${this.account}:log-group:/aws/bedrock-agentcore/runtimes/*`,
+            `Resource::arn:aws:logs:${this.region}:${this.account}:log-group:*`,
+            `Resource::arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default/workload-identity/${agentRuntimeName}-*`,
+            `Resource::<${this.getLogicalId(this.packagesTable.node.defaultChild as dynamodb.CfnTable)}.Arn>/index/*`,
+          ],
+        },
+      ],
+      true,
+    );
+
+    this.agentRuntime = new agentcore.CfnRuntime(this, 'AgentRuntime', {
+      agentRuntimeName,
+      description: 'HOP hackathon - agente de seguimiento de paquetes (Strands, TypeScript)',
+      roleArn: agentRole.roleArn,
+      agentRuntimeArtifact: {
+        codeConfiguration: {
+          code: { s3: { bucket: agentCode.s3BucketName, prefix: agentCode.s3ObjectKey } },
+          runtime: 'NODE_22',
+          entryPoint: props.agentEntryPoint ?? ['index.js'],
+        },
+      },
+      // PUBLIC: solo para dev. En un entorno real iría en VPC. Sin authorizer: el único caller
+      // es la Lambda inbound, autenticada por SigV4 e IAM.
+      networkConfiguration: { networkMode: 'PUBLIC' },
+      protocolConfiguration: 'HTTP',
+      environmentVariables: {
+        [ENV.STAGE]: stage,
+        [ENV.PACKAGES_TABLE]: this.packagesTable.tableName,
+        [ENV.HOP_POINTS_TABLE]: this.hopPointsTable.tableName,
+        [ENV.CONVERSATIONS_TABLE]: this.conversationsTable.tableName,
+        [ENV.INBOUND_MESSAGES_TABLE]: this.inboundMessagesTable.tableName,
+        MODEL_ID: agentModelId,
+      },
+    });
+    this.agentRuntime.node.addDependency(agentRole);
+
+    // AgentCore crea el log group del endpoint DEFAULT sin retención. Se declara acá para que
+    // tenga retención y se borre con el stack. Si el nombre no coincidiera con el que usa el
+    // servicio, queda un log group vacío sin otro efecto.
+    new logs.LogGroup(this, 'AgentRuntimeLogs', {
+      logGroupName: `/aws/bedrock-agentcore/runtimes/${this.agentRuntime.attrAgentRuntimeId}-DEFAULT`,
+      retention: logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // La Lambda inbound invoca el runtime (endpoint DEFAULT).
+    this.inboundRouterFn.addEnvironment(ENV.AGENT_RUNTIME_ARN, this.agentRuntime.attrAgentRuntimeArn);
+    this.inboundRouterFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'InvokeAgent',
+        actions: ['bedrock-agentcore:InvokeAgentRuntime'],
+        resources: [this.agentRuntime.attrAgentRuntimeArn, `${this.agentRuntime.attrAgentRuntimeArn}/runtime-endpoint/*`],
+      }),
+    );
+    NagSuppressions.addResourceSuppressions(
+      this.inboundRouterFn.role!,
+      [
+        {
+          id: 'AwsSolutions-IAM5',
+          reason: 'InvokeAgentRuntime exige el ARN del runtime y el de sus endpoints (runtime-endpoint/*).',
+          appliesTo: [`Resource::<${this.getLogicalId(this.agentRuntime)}.AgentRuntimeArn>/runtime-endpoint/*`],
+        },
+      ],
+      true,
+    );
+
+    new ssm.StringParameter(this, 'AgentRuntimeArnParam', {
+      parameterName: `/${PREFIX}/${stage}/app/agent-runtime-arn`,
+      stringValue: this.agentRuntime.attrAgentRuntimeArn,
+      description: 'ARN del runtime de AgentCore del agente HOP (lo crea el stack)',
+    });
+
+    // ----------------------------------------------------------------------
     // Mensajes entrantes: SNS (End User Messaging Social) → inbound-router
     // ----------------------------------------------------------------------
     const inboundDlq = new sqs.Queue(this, 'InboundDlq', {
@@ -412,5 +596,9 @@ export class HopStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ConversationsTableName', { value: this.conversationsTable.tableName });
     new cdk.CfnOutput(this, 'InboundMessagesTableName', { value: this.inboundMessagesTable.tableName });
     new cdk.CfnOutput(this, 'InboundDlqUrl', { value: inboundDlq.queueUrl });
+    new cdk.CfnOutput(this, 'AgentRuntimeArn', {
+      value: this.agentRuntime.attrAgentRuntimeArn,
+      description: 'aws bedrock-agentcore invoke-agent-runtime --agent-runtime-arn <arn> ...',
+    });
   }
 }

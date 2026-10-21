@@ -16,6 +16,7 @@ const githubSubjectPrefix = requireContext('hop:githubSubjectPrefix');
 const templateName = requireContext('hop:templateName');
 const templateLanguage = requireContext('hop:templateLanguage');
 const metaApiVersion = requireContext('hop:metaApiVersion');
+const agentModelId = requireContext('hop:agentModelId');
 
 const env: cdk.Environment = { account, region };
 
@@ -40,6 +41,7 @@ new HopStack(app, 'HopHackathonDev', {
   templateName,
   templateLanguage,
   metaApiVersion,
+  agentModelId,
 });
 
 // Tags para identificar todo lo del proyecto en una cuenta compartida.
