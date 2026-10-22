@@ -393,14 +393,16 @@ export class HopStack extends cdk.Stack {
     });
     this.agentRuntime.node.addDependency(agentRole);
 
-    // AgentCore crea el log group del endpoint DEFAULT sin retención. Se declara acá para que
-    // tenga retención y se borre con el stack. Si el nombre no coincidiera con el que usa el
-    // servicio, queda un log group vacío sin otro efecto.
-    new logs.LogGroup(this, 'AgentRuntimeLogs', {
-      logGroupName: `/aws/bedrock-agentcore/runtimes/${this.agentRuntime.attrAgentRuntimeId}-DEFAULT`,
-      retention: logs.RetentionDays.TWO_WEEKS,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
+    // El log group del endpoint DEFAULT lo crea AgentCore solo, al levantar el runtime, y queda
+    // sin retención. No se declara acá: CloudFormation no adopta un log group existente y el
+    // stack entero aborta con AlreadyExists cuando el servicio se adelanta a crearlo (pasó en
+    // el primer deploy). `LogRetention` lo toleraría, pero su Lambda necesita
+    // `logs:PutRetentionPolicy` sobre `*` y el proyecto no admite comodines en IAM.
+    // Queda pendiente: fijarle la retención de 14 días. Mientras tanto, a mano una vez:
+    //   aws logs put-retention-policy --log-group-name \
+    //     "/aws/bedrock-agentcore/runtimes/$(aws ssm get-parameter \
+    //       --name /hop-hackathon/dev/app/agent-runtime-arn --query Parameter.Value \
+    //       --output text | cut -d/ -f2)-DEFAULT" --retention-in-days 14
 
     // La Lambda inbound invoca el runtime (endpoint DEFAULT).
     this.inboundRouterFn.addEnvironment(ENV.AGENT_RUNTIME_ARN, this.agentRuntime.attrAgentRuntimeArn);

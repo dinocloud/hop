@@ -339,6 +339,8 @@ Carga 3 Puntos HOP de CABA y 10 paquetes en distintos estados. Los primeros paqu
 
 ## Verificar después del deploy
 
+Para el recorrido completo y el guión de demo, ver [docs/e2e-y-demo.md](docs/e2e-y-demo.md).
+
 ```bash
 export AWS_PROFILE=dino-dev AWS_REGION=us-east-1
 API_URL=$(aws cloudformation describe-stacks --stack-name hop-hackathon-dev --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text)
@@ -362,6 +364,12 @@ curl -s -X POST "${API_URL}packages/HOP-0001/status" \
 - **API**: API key + usage plan con throttling y cuota, validación de body y path, access logs. El rol de CloudWatch de API Gateway es un setting a nivel cuenta que ya existe: el stack no lo toca.
 - **DynamoDB**: on-demand, PITR, cifrado. `RemovalPolicy.DESTROY` a propósito para poder limpiar la cuenta compartida al terminar el hackathon.
 - **cdk-nag** en cada synth.
+
+> Excepción conocida: el log group del runtime de AgentCore (`/aws/bedrock-agentcore/runtimes/<id>-DEFAULT`)
+> lo crea el servicio y queda **sin retención**. No se declara en el stack porque CloudFormation
+> no adopta un log group existente y el deploy entero aborta con `AlreadyExists`. `LogRetention`
+> lo resolvería, pero su Lambda pide `logs:PutRetentionPolicy` sobre `*`, que el proyecto no admite.
+> Pendiente de resolver; mientras tanto se fija a mano (ver comentario en `infra/lib/hop-stack.ts`).
 
 ## Limpieza al terminar el hackathon
 
