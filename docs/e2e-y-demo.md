@@ -6,6 +6,18 @@ verifica que encajan de punta a punta contra WhatsApp real.
 
 Card: [Prueba E2E con número de testing + guión de demo](https://app.clickup.com/t/86e3pnw17)
 
+## Estado
+
+| Flujo | Estado |
+|---|---|
+| A — consulta (entrante → agente → texto + ubicación) | ✅ verificado 2026-10-22 |
+| B — aviso proactivo (hook → plantilla) | ⏳ espera la plantilla aprobada en Meta |
+| C — resolución desde el chat (`extend_deadline`) | ✅ verificado 2026-10-22 |
+
+Del Flujo C se probó `extend_deadline`. Las otras tres acciones (`change_hop_point`,
+`reschedule_delivery`, `request_return`) comparten el mismo camino —el agente confirma y
+escribe en `Packages`— pero no se ejercitaron contra el stack.
+
 ## Antes de empezar
 
 ```bash
@@ -41,20 +53,50 @@ aws ssm get-parameters-by-path --path /hop-hackathon/dev/whatsapp --query 'Param
 Es el que se puede probar siempre: lo dispara la persona, así que no necesita plantilla.
 
 1. **Escribile al número desde tu teléfono**: `¿dónde está mi paquete?`
-2. **Seguir la Lambda** mientras tanto:
+2. **Mirar las métricas** mientras tanto:
    ```bash
-   aws logs tail /aws/lambda/hop-hackathon-inbound-router --since 2m --follow
+   aws logs tail /aws/lambda/hop-hackathon-inbound-router --since 2m --follow --format short
    ```
-3. **Qué tiene que pasar**, en orden:
-   - El evento entra por SNS y la Lambda lo toma (`claimMessage`).
-   - `touchInbound` abre la ventana de 24 h y asigna el `sessionId`.
-   - Invoca AgentCore; el agente usa `get_my_packages` con el teléfono de la sesión.
-   - Vuelve `{ text, hopPointId }` y la Lambda manda `sendText`.
-   - Si el paquete está `READY_AT_HOP`, manda además el pin con `sendLocation`.
-4. **Resultado esperado en el teléfono**: un texto con el estado y el punto, y si hay paquete
+   El log es deliberadamente silencioso: en el camino feliz solo salen métricas EMF, no una
+   traza paso a paso. Lo que se ve es `InboundProcessed: 1` cuando el mensaje se procesó, y
+   después varios `InboundStatus: 1`, que son los `sent`/`delivered`/`read` de las respuestas.
+   Los `WARN` y `ERROR` aparecen solo si algo falla (`InboundParseError`, `AgentFailed`,
+   `ReplyFailed`, `ReplyDeliveryFailed`).
+3. **Resultado esperado en el teléfono**: un texto con el estado y el punto, y si hay paquete
    listo, un segundo mensaje con la ubicación.
+4. **Verificar que la conversación quedó registrada** (abre la ventana de 24 h y fija el
+   `sessionId` que el agente usa para mantener el hilo):
+   ```bash
+   aws dynamodb scan --table-name hop-hackathon-conversations \
+     --query 'Items[].{telefono:phone.S,sesion:sessionId.S}'
+   ```
 
-Sin teléfono (el número indicado igual recibe la respuesta real):
+Medido el 2026-10-22: del mensaje a las dos respuestas entregadas, ~6 segundos.
+
+### Probar el agente aislado
+
+Antes de meter WhatsApp en el medio conviene invocar el runtime directo: si falla acá, el
+problema es el agente o las tools, no la mensajería.
+
+```bash
+ARN=$(aws ssm get-parameter --name /hop-hackathon/dev/app/agent-runtime-arn --query Parameter.Value --output text)
+aws bedrock-agentcore invoke-agent-runtime \
+  --agent-runtime-arn "$ARN" \
+  --runtime-session-id "$(uuidgen | tr -d '-')0000" \
+  --content-type application/json --accept application/json \
+  --payload "$(printf '{"phone":"+54911XXXXXXXX","text":"¿dónde está mi paquete?"}' | base64)" /dev/stdout
+```
+
+> `--content-type application/json` **no es opcional**: sin él el runtime responde `415`.
+> El `runtime-session-id` necesita 33 caracteres o más, así que un `uuidgen` pelado (36 con
+> guiones, 32 sin) conviene rellenarlo como arriba.
+
+Devuelve `{ text, location }`. La `location` solo aparece si el teléfono tiene un paquete
+`READY_AT_HOP`; el modelo devuelve un `hopPointId` y el servidor arma el pin desde DynamoDB.
+
+### Sin teléfono
+
+El número indicado igual recibe la respuesta real:
 
 ```bash
 npm run publish:inbound -- +54911XXXXXXXX "¿dónde está mi paquete?"
@@ -101,7 +143,11 @@ Lo interesante para mostrar: la persona contesta el aviso y el agente resuelve s
 | "mejor que llegue el viernes" | `reschedule_delivery` — `IN_TRANSIT` con `scheduledAt` |
 | "devolvelo" | `request_return` — `RETURNED`, definitivo |
 
-Verificar que el cambio quedó escrito:
+El agente confirma antes de ejecutar: primero pide el dato que falta (cuántos días), después
+pide confirmación explícita, y recién ahí escribe. Hay que contestarle que sí.
+
+Verificar que el cambio quedó escrito — esto es lo que separa "el agente dijo que lo hizo" de
+"el agente lo hizo":
 
 ```bash
 aws dynamodb get-item --table-name hop-hackathon-packages \
@@ -109,7 +155,18 @@ aws dynamodb get-item --table-name hop-hackathon-packages \
   --query 'Item.{estado:status.S,punto:hopPointId.S,plazo:deadlineAt.S,programado:scheduledAt.S}'
 ```
 
-El agente confirma antes de ejecutar una acción, así que hay que responder que sí.
+**Al leer `deadlineAt`, convertí a hora de Buenos Aires antes de juzgar si está bien.** El plazo
+vence a las 23:59 de BA, que en UTC cae el día siguiente. En la corrida del 2026-10-22, extender
+2 días desde el martes 27 dejó `2026-10-30T02:59:59Z`, que es **jueves 29/10 23:59 en BA** —
+correcto, aunque el ISO diga 30.
+
+```bash
+python3 -c "
+from datetime import datetime,timezone,timedelta
+u=datetime.fromisoformat('2026-10-30T02:59:59+00:00')
+print(u.astimezone(timezone(timedelta(hours=-3))))
+"
+```
 
 ## Guión de demo
 
