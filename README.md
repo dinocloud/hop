@@ -240,9 +240,12 @@ curl -s -X POST localhost:8080/invocations -H 'content-type: application/json' \
 Después del deploy:
 
 ```bash
+# --content-type es obligatorio: sin él el runtime devuelve 415.
+# El session id necesita 33 caracteres o más, así que uuidgen pelado no alcanza.
 aws bedrock-agentcore invoke-agent-runtime --region us-east-1 \
   --agent-runtime-arn "$(aws ssm get-parameter --name /hop-hackathon/dev/app/agent-runtime-arn --query Parameter.Value --output text)" \
-  --runtime-session-id "$(uuidgen)" \
+  --runtime-session-id "$(uuidgen | tr -d '-')0000" \
+  --content-type application/json --accept application/json \
   --payload "$(echo -n '{"phone":"+549...","text":"¿dónde está mi paquete?"}' | base64)" /dev/stdout
 ```
 
