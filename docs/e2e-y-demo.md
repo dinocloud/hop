@@ -138,7 +138,8 @@ Lo interesante para mostrar: la persona contesta el aviso y el agente resuelve s
 
 | Qué escribir | Qué tiene que hacer |
 |---|---|
-| "creame un paquete de prueba" | `create_package` — alta a nombre del teléfono que escribe, listo para retirar |
+| "I want to send a package" | `send_package` — pregunta a qué Punto HOP y lo registra **en camino** |
+| "I dropped it off" | `confirm_dropoff` — pasa a listo para retirar y arranca el plazo |
 | "no llego, ¿me das más días?" | `extend_deadline` — corre el plazo, mismo punto |
 | "¿lo pueden mandar a Belgrano?" | `change_hop_point` — pasa a `IN_TRANSIT` en el punto nuevo |
 | "mejor que llegue el viernes" | `reschedule_delivery` — `IN_TRANSIT` con `scheduledAt` |
@@ -171,26 +172,43 @@ print(u.astimezone(timezone(timedelta(hours=-3))))
 
 ## Guión de demo
 
-Unos 6 minutos. Sembrar los datos **antes** y tener el teléfono en pantalla.
+Unos 6 minutos. Tener el teléfono en pantalla.
+
+> **Idioma**: el agente contesta en **inglés** por defecto, y cambia al idioma en que le
+> escriban. Si querés la demo en inglés, escribile en inglés desde el primer mensaje.
 
 **1. El problema** (30 s)
 Un paquete llega al Punto HOP y la persona no se entera, o se entera y no puede ir. Hoy eso
 termina en una llamada al call center o en una devolución.
 
-**2. El aviso llega solo** (1 min)
-Correr el POST del Flujo B en vivo. La plantilla aparece en el teléfono: nombre, punto y
-plazo. Señalar que lo disparó el sistema de envíos, no una persona.
+**2. Cualquiera puede probarlo** (1 min)
+Que alguien del público le escriba al número por primera vez: *"where is my package?"*. No
+tiene nada asociado, así que el agente le registra uno esperándolo en un Punto HOP y le
+contesta con el seguimiento, el punto y el plazo. Nunca dice que sea de prueba.
 
-**3. La consulta** (1 min 30 s)
-Responder desde el teléfono: *"¿dónde está?"*. Llega el estado y el pin de ubicación.
-Mostrar que el agente nunca pidió el número de tracking: usa el teléfono de la sesión.
+**2b. Y del otro lado: enviar** (1 min)
+*"I want to send a package"* → el agente ofrece los Puntos HOP, y con el que elija lo registra
+**en camino**, sin plazo todavía. Le pide que avise cuando lo haya dejado.
+*"I dropped it off"* → pasa a listo para retirar y ahí sí arranca el plazo.
+
+Vale señalarlo en la demo: el paquete no está listo porque alguien lo dijo en un formulario,
+sino porque el remitente confirmó que lo dejó. Los dos estados existen de verdad en la tabla.
+
+**3. La consulta** (1 min)
+*"where is it?"* → llega el estado y el pin de ubicación. Señalar que el agente nunca pidió el
+número de tracking: usa el teléfono de la conversación, así que nadie ve paquetes ajenos.
 
 **4. La resolución** (2 min)
-*"no llego hasta el viernes, ¿me das más tiempo?"* → el agente ofrece extender, confirma y
-lo hace. Mostrar el `get-item` con el `deadlineAt` nuevo.
-Después: *"mejor mandámelo a Belgrano"* → cambia de punto y el paquete vuelve a `IN_TRANSIT`.
+*"I can't make it until Friday, can I have more time?"* → el agente ofrece extender, pide
+confirmación y recién ahí escribe. Mostrar el `get-item` con el `deadlineAt` nuevo: es la
+diferencia entre que lo diga y que lo haga.
+Después: *"actually, send it to Belgrano"* → cambia de punto y el paquete vuelve a `IN_TRANSIT`.
 
-**5. Cómo está hecho** (1 min)
+**5. El aviso proactivo** (30 s, si la plantilla está aprobada)
+Correr el POST del Flujo B. La plantilla llega sola: la disparó el sistema de envíos, no una
+persona.
+
+**6. Cómo está hecho** (1 min)
 El diagrama del README. Tres puntos: todo serverless y por CDK; el agente corre en AgentCore
 Runtime con deploy de código directo, sin contenedor; y el modelo nunca inventa coordenadas
 —devuelve un `hopPointId` y el servidor arma el pin desde DynamoDB.
@@ -225,8 +243,9 @@ aws dynamodb scan --table-name hop-hackathon-packages --query 'Items[].phone.S' 
 
 Si el teléfono que escribió no está en la segunda lista hay dos salidas:
 
-**Desde el propio chat** (lo más rápido, y lo que va a hacer la gente en la demo): pedirle al bot
-*"creame un paquete de prueba"*. El agente usa `create_package` con el teléfono de la conversación.
+**Desde el propio chat** (lo más rápido, y lo que va a hacer la gente en la demo): basta con
+escribirle. Si el teléfono no tiene paquetes, el agente registra uno solo, sin preguntar. Y si la
+persona dice que quiere enviar un paquete, le pregunta a qué Punto HOP y lo registra ahí.
 
 **Desde la terminal**, si preferís controlar los datos:
 
