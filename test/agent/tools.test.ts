@@ -32,14 +32,26 @@ const mine: Package = {
   updatedAt: '2026-10-17T12:00:00Z',
 };
 const theirs: Package = { ...mine, trackingId: 'HOP-0002', phone: OTHER };
+/** Envío del cliente todavía en camino al punto. */
+const inTransit: Package = { ...mine, trackingId: 'HOP-0003', status: 'IN_TRANSIT', deadlineAt: undefined };
+/** Envío en camino pero de otro cliente. */
+const inTransitTheirs: Package = { ...inTransit, trackingId: 'HOP-0004', phone: OTHER };
 
 function setup() {
   const repos = {
     getPackagesByPhone: vi.fn(async (phone: string, limit: number) => (phone === PHONE ? [mine].slice(0, limit) : [])),
-    getPackage: vi.fn(async (id: string) => ({ 'HOP-0001': mine, 'HOP-0002': theirs })[id]),
+    getPackage: vi.fn(
+      async (id: string) => ({ 'HOP-0001': mine, 'HOP-0002': theirs, 'HOP-0003': inTransit, 'HOP-0004': inTransitTheirs })[id],
+    ),
     getHopPoint: vi.fn(async (id: string) => (id === 'hop-palermo' ? palermo : undefined)),
     listHopPoints: vi.fn(async () => [belgrano, caballito, palermo]),
     createPackage: vi.fn(async (pkg: Package) => pkg),
+    updatePackageStatus: vi.fn(async (trackingId: string, patch: { status: string; deadlineAt?: string }) => ({
+      ...mine,
+      trackingId,
+      status: patch.status,
+      deadlineAt: patch.deadlineAt,
+    })),
   } as unknown as Repos;
   const tools = createTools({ repos, phone: PHONE, now: () => NOW });
   type AnyTool = { invoke(input: unknown): Promise<unknown> };
@@ -48,15 +60,16 @@ function setup() {
 }
 
 describe('tools del agente', () => {
-  it('expone exactamente las tools de consulta y el alta de prueba', () => {
+  it('expone exactamente las tools de consulta y el alta de envíos', () => {
     const { byName } = setup();
     expect(Object.keys(byName).sort()).toEqual([
-      'create_package',
+      'confirm_dropoff',
       'get_calendar',
       'get_hop_point',
       'get_my_packages',
       'get_package_by_tracking',
       'list_hop_points',
+      'send_package',
     ]);
   });
 
@@ -145,36 +158,44 @@ describe('tools del agente', () => {
     expect(await byName['get_hop_point']!.invoke({ hopPointId: 'hop-nope' })).toEqual({ found: false });
   });
 
-  describe('create_package', () => {
-    it('crea el paquete a nombre del teléfono de la sesión, nunca de uno que digan', async () => {
+  describe('send_package', () => {
+    it('registra el envío a nombre del teléfono de la sesión, nunca de uno que digan', async () => {
       const { repos, byName } = setup();
-      const res = (await byName.create_package!.invoke({})) as { created: boolean };
+      const res = (await byName.send_package!.invoke({})) as { created: boolean };
       expect(res.created).toBe(true);
       const created = vi.mocked(repos.createPackage).mock.calls[0]![0];
       expect(created.phone).toBe(PHONE);
     });
 
-    it('lo deja listo para retirar, que es el estado donde sirven las acciones', async () => {
+    it('un envío arranca en camino, sin plazo: todavía no lo dejaron en el punto', async () => {
       const { repos, byName } = setup();
-      await byName.create_package!.invoke({});
+      await byName.send_package!.invoke({});
+      const created = vi.mocked(repos.createPackage).mock.calls[0]![0];
+      expect(created.status).toBe('IN_TRANSIT');
+      expect(created.deadlineAt).toBeUndefined();
+    });
+
+    it('con arrived queda listo para retirar: es un paquete que le llega al cliente', async () => {
+      const { repos, byName } = setup();
+      await byName.send_package!.invoke({ arrived: true });
       expect(vi.mocked(repos.createPackage).mock.calls[0]![0].status).toBe('READY_AT_HOP');
     });
 
     it('usa el Punto HOP pedido', async () => {
       const { repos, byName } = setup();
-      await byName.create_package!.invoke({ hopPointId: 'hop-caballito' });
+      await byName.send_package!.invoke({ hopPointId: 'hop-caballito' });
       expect(vi.mocked(repos.createPackage).mock.calls[0]![0].hopPointId).toBe('hop-caballito');
     });
 
     it('elige uno solo si no se lo piden', async () => {
       const { repos, byName } = setup();
-      await byName.create_package!.invoke({});
+      await byName.send_package!.invoke({});
       expect(vi.mocked(repos.createPackage).mock.calls[0]![0].hopPointId).toBeTruthy();
     });
 
     it('avisa cuáles hay cuando el punto no existe, sin crear nada', async () => {
       const { repos, byName } = setup();
-      const res = (await byName.create_package!.invoke({ hopPointId: 'hop-marte' })) as { created: boolean; available: string[] };
+      const res = (await byName.send_package!.invoke({ hopPointId: 'hop-marte' })) as { created: boolean; available: string[] };
       expect(res.created).toBe(false);
       expect(res.available).toContain('hop-palermo');
       expect(repos.createPackage).not.toHaveBeenCalled();
@@ -182,7 +203,7 @@ describe('tools del agente', () => {
 
     it('el plazo vence a las 23:59 de Buenos Aires del día N', async () => {
       const { repos, byName } = setup();
-      await byName.create_package!.invoke({ deadlineDays: 3 });
+      await byName.send_package!.invoke({ arrived: true, deadlineDays: 3 });
       // NOW es sábado 17/10 09:00 BA; +3 días es martes 20/10 23:59 BA = 21/10 02:59:59Z.
       expect(vi.mocked(repos.createPackage).mock.calls[0]![0].deadlineAt).toBe('2026-10-21T02:59:59.000Z');
     });
@@ -192,7 +213,7 @@ describe('tools del agente', () => {
       vi.mocked(repos.createPackage)
         .mockRejectedValueOnce(new TrackingIdTakenError('HOP-1234'))
         .mockImplementationOnce(async (pkg: Package) => pkg);
-      const res = (await byName.create_package!.invoke({})) as { created: boolean };
+      const res = (await byName.send_package!.invoke({})) as { created: boolean };
       expect(res.created).toBe(true);
       expect(repos.createPackage).toHaveBeenCalledTimes(2);
     });
@@ -200,10 +221,56 @@ describe('tools del agente', () => {
     it('se rinde con un motivo si no consigue un tracking libre', async () => {
       const { repos, byName } = setup();
       vi.mocked(repos.createPackage).mockRejectedValue(new TrackingIdTakenError('HOP-1234'));
-      const res = (await byName.create_package!.invoke({})) as { created: boolean; reason: string };
+      const res = (await byName.send_package!.invoke({})) as { created: boolean; reason: string };
       expect(res.created).toBe(false);
       expect(res.reason).toMatch(/número de seguimiento/);
       expect(repos.createPackage).toHaveBeenCalledTimes(CREATE_ATTEMPTS);
+    });
+  });
+
+  describe('confirm_dropoff', () => {
+    it('pasa el envío a listo para retirar y le pone plazo', async () => {
+      const { repos, byName } = setup();
+      const res = (await byName.confirm_dropoff!.invoke({ trackingId: 'HOP-0003' })) as { ok: boolean };
+      expect(res.ok).toBe(true);
+      const [, patch] = vi.mocked(repos.updatePackageStatus).mock.calls[0]!;
+      expect(patch.status).toBe('READY_AT_HOP');
+      // NOW es sábado 17/10 09:00 BA; +5 días por defecto es jueves 22/10 23:59 BA.
+      expect(patch.deadlineAt).toBe('2026-10-23T02:59:59.000Z');
+    });
+
+    it('respeta los días pedidos', async () => {
+      const { repos, byName } = setup();
+      await byName.confirm_dropoff!.invoke({ trackingId: 'HOP-0003', deadlineDays: 3 });
+      expect(vi.mocked(repos.updatePackageStatus).mock.calls[0]![1].deadlineAt).toBe('2026-10-21T02:59:59.000Z');
+    });
+
+    it('limpia el aviso anterior, porque el paquete recién ahora está listo', async () => {
+      const { repos, byName } = setup();
+      await byName.confirm_dropoff!.invoke({ trackingId: 'HOP-0003' });
+      expect(vi.mocked(repos.updatePackageStatus).mock.calls[0]![1].resetReadyNotification).toBe(true);
+    });
+
+    it('no toca un paquete de otro cliente, y lo trata como inexistente', async () => {
+      const { repos, byName } = setup();
+      const res = (await byName.confirm_dropoff!.invoke({ trackingId: 'HOP-0004' })) as { ok: boolean; reason: string };
+      expect(res.ok).toBe(false);
+      expect(res.reason).toMatch(/No encontré/);
+      expect(repos.updatePackageStatus).not.toHaveBeenCalled();
+    });
+
+    it('no confirma un paquete que no está en camino', async () => {
+      const { repos, byName } = setup();
+      const res = (await byName.confirm_dropoff!.invoke({ trackingId: 'HOP-0001' })) as { ok: boolean; status: string };
+      expect(res.ok).toBe(false);
+      expect(res.status).toBe('READY_AT_HOP');
+      expect(repos.updatePackageStatus).not.toHaveBeenCalled();
+    });
+
+    it('devuelve el Punto HOP para que el cliente reciba el pin', async () => {
+      const { byName } = setup();
+      const res = (await byName.confirm_dropoff!.invoke({ trackingId: 'HOP-0003' })) as { hopPoint?: { name: string } };
+      expect(res.hopPoint?.name).toBe('Punto HOP Palermo');
     });
   });
 });

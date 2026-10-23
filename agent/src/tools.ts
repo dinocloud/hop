@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { TrackingIdTakenError, type Repos } from '../../src/lib/dynamo.js';
 import { InvalidPhoneError } from '../../src/lib/phone.js';
 import { calendarDaysUntilInBuenosAires, endOfDayInBuenosAires, formatDayInBuenosAires, isoDateInBuenosAires } from '../../src/lib/time.js';
-import type { HopPoint, Package } from '../../src/lib/types.js';
+import type { HopPoint, Package, PackageStatus } from '../../src/lib/types.js';
 
 /**
  * Tools de consulta del agente. Leen DynamoDB a través de los mismos repos que las Lambdas.
@@ -71,8 +71,8 @@ function distanceKm(from: HopPoint, to: HopPoint): number {
   return Math.round(2 * EARTH_RADIUS_KM * Math.asin(Math.sqrt(h)) * 10) / 10;
 }
 
-/** Plazo por defecto de un paquete creado desde el chat. */
-export const DEFAULT_DEMO_DEADLINE_DAYS = 5;
+/** Plazo por defecto de un envío registrado desde el chat. */
+export const DEFAULT_DEADLINE_DAYS = 5;
 /** Intentos antes de rendirse si el tracking al azar choca con uno existente. */
 export const CREATE_ATTEMPTS = 5;
 
@@ -177,18 +177,22 @@ export function createTools(deps: ToolDeps) {
   });
 
   /**
-   * Alta de un paquete de prueba para quien está escribiendo.
+   * Registra un envío a nombre de quien está escribiendo.
    *
-   * En el dominio real los paquetes los crea el sistema de envíos, no el cliente: existe para
-   * que cualquiera pueda probar el bot desde su teléfono durante el hackathon sin que alguien
-   * del equipo le siembre datos a mano. Siempre usa el teléfono de la sesión, nunca uno que
-   * diga el usuario, igual que `get_my_packages`.
+   * Cubre dos situaciones: que la persona pida explícitamente enviar un paquete, y que escriba
+   * sin tener ninguno asociado (ahí el agente lo registra sin preguntar, para que tenga algo
+   * que seguir). Siempre usa el teléfono de la sesión, nunca uno que diga el usuario, igual que
+   * `get_my_packages`.
+   *
+   * Nota de alcance: en una operación real el alta la hace el sistema de envíos, no el cliente.
+   * Acá existe para que cualquiera pueda usar el bot de punta a punta por su cuenta.
    */
-  const createDemoPackage = tool({
-    name: 'create_package',
+  const sendPackage = tool({
+    name: 'send_package',
     description:
-      'Crea un paquete de prueba a nombre de quien está escribiendo, para poder probar el seguimiento. ' +
-      'Usalo cuando la persona pide un paquete de prueba o dice que no tiene ninguno. No pidas el teléfono: se usa el de la conversación.',
+      'Registra un envío nuevo a nombre de quien está escribiendo, en camino al Punto HOP de destino. ' +
+      'Usalo cuando la persona quiere enviar un paquete. Queda IN_TRANSIT hasta que confirme que lo dejó ' +
+      '(confirm_dropoff). No pidas el teléfono: se usa el de la conversación.',
     inputSchema: z.object({
       hopPointId: z
         .string()
@@ -196,11 +200,15 @@ export function createTools(deps: ToolDeps) {
         .min(1)
         .max(64)
         .optional()
-        .describe('Punto HOP donde dejarlo. Si no se indica, elegí uno con list_hop_points.'),
-      deadlineDays: z.number().int().min(1).max(30).optional().describe('Días de plazo para retirarlo (default 5)'),
+        .describe('Punto HOP de destino. Si la persona no lo eligió, omitilo y se asigna uno.'),
+      arrived: z
+        .boolean()
+        .optional()
+        .describe('true solo si el paquete ya está en el Punto HOP y el cliente lo va a retirar (destinatario, no remitente)'),
+      deadlineDays: z.number().int().min(1).max(30).optional().describe('Días de plazo para retirarlo (default 5); solo con arrived'),
       customerName: z.string().trim().min(1).max(60).optional().describe('Nombre del cliente, si lo dijo en la conversación'),
     }),
-    callback: async ({ hopPointId, deadlineDays, customerName }) => {
+    callback: async ({ hopPointId, arrived, deadlineDays, customerName }) => {
       const hopPoints = await deps.repos.listHopPoints();
       if (hopPoints.length === 0) return { created: false, reason: 'No hay Puntos HOP cargados' };
 
@@ -209,8 +217,10 @@ export function createTools(deps: ToolDeps) {
         return { created: false, reason: `No existe el Punto HOP "${hopPointId}"`, available: hopPoints.map((h) => h.id) };
       }
 
-      const days = deadlineDays ?? DEFAULT_DEMO_DEADLINE_DAYS;
+      const days = deadlineDays ?? DEFAULT_DEADLINE_DAYS;
       const createdAt = now();
+      // El remitente arranca en camino; el destinatario ya lo tiene esperando en el punto.
+      const status: PackageStatus = arrived ? 'READY_AT_HOP' : 'IN_TRANSIT';
 
       // Tracking al azar en vez de "el mayor + 1": evita escanear la tabla entera en cada alta y
       // la carrera entre dos personas creando a la vez. La colisión la corta la condición del put.
@@ -219,9 +229,9 @@ export function createTools(deps: ToolDeps) {
           trackingId: randomTrackingId(),
           phone: deps.phone,
           customerName: customerName ?? 'Cliente',
-          status: 'READY_AT_HOP',
+          status,
           hopPointId: hop.id,
-          deadlineAt: endOfDayInBuenosAires(createdAt, days).toISOString(),
+          ...(status === 'READY_AT_HOP' ? { deadlineAt: endOfDayInBuenosAires(createdAt, days).toISOString() } : {}),
           updatedAt: createdAt.toISOString(),
         };
         try {
@@ -236,5 +246,46 @@ export function createTools(deps: ToolDeps) {
     },
   });
 
-  return [getMyPackages, getPackageByTracking, getHopPoint, listHopPoints, getCalendar, createDemoPackage];
+  /**
+   * El remitente avisa que dejó el paquete en el Punto HOP: pasa a listo para retirar y arranca
+   * el plazo. Solo sobre paquetes del cliente y que estén en camino.
+   */
+  const confirmDropoff = tool({
+    name: 'confirm_dropoff',
+    description:
+      'Marca que el cliente ya dejó su paquete en el Punto HOP, así queda listo para retirar y empieza a correr el plazo. ' +
+      'Usalo solo cuando confirma que lo dejó, sobre un paquete suyo que esté en camino.',
+    inputSchema: z.object({
+      trackingId: z
+        .string()
+        .trim()
+        .regex(/^[A-Za-z0-9-]{3,64}$/, 'Formato de tracking inválido')
+        .describe('Número de seguimiento del paquete'),
+      deadlineDays: z.number().int().min(1).max(30).optional().describe('Días de plazo para retirarlo (default 5)'),
+    }),
+    callback: async ({ trackingId, deadlineDays }) => {
+      const pkg = await deps.repos.getPackage(trackingId.toUpperCase());
+      if (!pkg || pkg.phone !== deps.phone) return { ok: false, reason: 'No encontré ese paquete' };
+      if (pkg.status !== 'IN_TRANSIT') {
+        return { ok: false, reason: `El paquete está ${pkg.status}, no en camino`, status: pkg.status };
+      }
+      if (!pkg.hopPointId) return { ok: false, reason: 'El paquete no tiene Punto HOP asignado' };
+
+      const at = now();
+      const updated = await deps.repos.updatePackageStatus(
+        pkg.trackingId,
+        {
+          status: 'READY_AT_HOP',
+          hopPointId: pkg.hopPointId,
+          deadlineAt: endOfDayInBuenosAires(at, deadlineDays ?? DEFAULT_DEADLINE_DAYS).toISOString(),
+          resetReadyNotification: true,
+        },
+        at,
+      );
+      const hop = await deps.repos.getHopPoint(pkg.hopPointId);
+      return { ok: true, package: presentPackage(updated, at), ...(hop ? { hopPoint: presentHopPoint(hop) } : {}) };
+    },
+  });
+
+  return [getMyPackages, getPackageByTracking, getHopPoint, listHopPoints, getCalendar, sendPackage, confirmDropoff];
 }
