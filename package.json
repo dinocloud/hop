@@ -23,7 +23,8 @@
     "cdk": "cdk",
     "send:test": "tsx scripts/send-test.ts",
     "smoke:agent": "node scripts/smoke-agent.mjs",
-    "publish:inbound": "tsx scripts/publish-inbound.ts"
+    "publish:inbound": "tsx scripts/publish-inbound.ts",
+    "add:package": "tsx scripts/add-package.ts"
   },
   "devDependencies": {
     "@aws-sdk/client-sns": "^3.1152.0",

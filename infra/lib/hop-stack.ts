@@ -285,7 +285,8 @@ export class HopStack extends cdk.Stack {
     const inferenceProfileArn = `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/${agentModelId}`;
     // Tools de consulta: lectura de paquetes (por tracking y por teléfono vía GSI) y de Puntos HOP
     // (uno o la lista completa). Tools de resolución: UpdateItem condicional sobre el paquete.
-    this.packagesTable.grant(agentRole, 'dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:UpdateItem');
+    // PutItem: el agente puede dar de alta paquetes de prueba desde el chat (ver create_package).
+    this.packagesTable.grant(agentRole, 'dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:UpdateItem', 'dynamodb:PutItem');
     this.hopPointsTable.grant(agentRole, 'dynamodb:GetItem', 'dynamodb:Scan');
     agentRole.addToPolicy(
       new iam.PolicyStatement({

@@ -190,7 +190,8 @@ describe('HopStack', () => {
     );
     expect(agentDynamo).toHaveLength(1);
     // UpdateItem para las tools de resolución (extender, cambiar de punto, reprogramar, devolver).
-    expect(agentDynamo[0]?.Action).toEqual(['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:UpdateItem']);
+    // PutItem: el alta de paquetes de prueba desde el chat (tool create_package).
+    expect(agentDynamo[0]?.Action).toEqual(['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:UpdateItem', 'dynamodb:PutItem']);
     const agentHopPoints = allStatements(template).filter(
       (s) => JSON.stringify(s.Resource).includes('HopPointsTable') && Array.isArray(s.Action) && s.Action.includes('dynamodb:Scan'),
     );

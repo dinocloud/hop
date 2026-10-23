@@ -2,6 +2,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
   GetCommand,
+  PutCommand,
   QueryCommand,
   ScanCommand,
   UpdateCommand,
@@ -56,6 +57,14 @@ export class ConcurrentUpdateError extends Error {
 export const MESSAGE_LEASE_SECONDS = 70;
 
 /** Resultado de reclamar un mensaje entrante. */
+/** El `trackingId` elegido ya estaba tomado. Quien llama puede reintentar con otro. */
+export class TrackingIdTakenError extends Error {
+  constructor(readonly trackingId: string) {
+    super(`Ya existe un paquete con el tracking ${trackingId}`);
+    this.name = 'TrackingIdTakenError';
+  }
+}
+
 export type ClaimResult = 'claimed' | 'done' | 'in_progress';
 /** Los ítems de dedupe se borran solos a los 7 días. */
 export const MESSAGE_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -177,6 +186,26 @@ export function createRepos(deps: ReposDeps = {}) {
   }
 
   /** Registra el resultado del aviso "paquete listo" en el paquete. */
+  /**
+   * Alta de un paquete. Falla si el `trackingId` ya existe, en vez de pisarlo: el alta nunca
+   * puede destruir el estado de un paquete en curso.
+   */
+  async function createPackage(pkg: Package): Promise<Package> {
+    try {
+      await doc.send(
+        new PutCommand({
+          TableName: tables.packages,
+          Item: pkg,
+          ConditionExpression: 'attribute_not_exists(trackingId)',
+        }),
+      );
+    } catch (err) {
+      if (isConditionalCheckFailed(err)) throw new TrackingIdTakenError(pkg.trackingId);
+      throw err;
+    }
+    return pkg;
+  }
+
   async function markReadyNotification(trackingId: string, patch: ReadyNotificationPatch, now = new Date()): Promise<void> {
     const sets = ['#readyNotificationStatus = :status', '#readyNotifiedAt = :at'];
     const removes: string[] = [];
@@ -339,6 +368,7 @@ export function createRepos(deps: ReposDeps = {}) {
   return {
     getPackage,
     getPackagesByPhone,
+    createPackage,
     updatePackageStatus,
     markReadyNotification,
     getHopPoint,
