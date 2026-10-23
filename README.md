@@ -340,6 +340,16 @@ AWS_PROFILE=dino-dev SEED_PHONES=+5491112345678,+5491187654321 npm run seed
 
 Carga 3 Puntos HOP de CABA y 10 paquetes en distintos estados. Los primeros paquetes quedan asociados, en orden, a los teléfonos de `SEED_PHONES` (los del equipo, nunca en el repo). Es idempotente.
 
+Para sumar un teléfono sin resembrar todo (alguien que se suma a la demo desde otro celular):
+
+```bash
+AWS_PROFILE=dino-dev npm run add:package -- +5491112345678 --name Lean --point hop-belgrano --days 3
+```
+
+Crea un paquete suelto siguiendo la numeración existente (`HOP-0011`, `HOP-0012`...), valida que el Punto HOP exista y no pisa nada: si el `trackingId` ya está, falla. Opciones en el encabezado de `scripts/add-package.ts`.
+
+> Resembrar con `SEED_PHONES` ampliado también funciona, pero reparte de nuevo los 10 paquetes fijos entre todos los teléfonos y reescribe los plazos, así que se pierde el estado de las pruebas en curso.
+
 ## Verificar después del deploy
 
 Para el recorrido completo y el guión de demo, ver [docs/e2e-y-demo.md](docs/e2e-y-demo.md).

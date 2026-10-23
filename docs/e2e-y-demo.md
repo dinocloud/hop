@@ -198,6 +198,7 @@ Runtime con deploy de código directo, sin contenedor; y el modelo nunca inventa
 
 | Síntoma | Causa más probable | Qué hacer |
 |---|---|---|
+| "No encontré el paquete" | **estás escribiendo desde un teléfono sin paquetes asociados** | ver abajo |
 | La plantilla no llega | no está aprobada en Meta | seguir con el Flujo A, que no la necesita |
 | No contesta la consulta | ventana de 24 h cerrada | escribir desde el teléfono primero |
 | Tarda y responde la disculpa | sesión de AgentCore levantando | reintentar; el primer mensaje después de 15 min de inactividad es el lento |
@@ -205,3 +206,26 @@ Runtime con deploy de código directo, sin contenedor; y el modelo nunca inventa
 
 El último es el único que conviene evitar activamente: **un mensaje por vez**, esperando la
 respuesta. Está documentado en el README (ordenar de verdad necesita SQS FIFO, pendiente).
+
+### El síntoma que más confunde: "no encontré el paquete"
+
+Las tools filtran por el teléfono de la sesión: `get_my_packages` busca por ese teléfono y
+`get_package_by_tracking` devuelve `found: false` si el paquete pertenece a otro. Es la
+protección de privacidad funcionando —nadie consulta el paquete ajeno por número de
+seguimiento— pero el mensaje no sugiere para nada la causa.
+
+Pasó en una prueba real: los paquetes estaban sembrados para un teléfono y la consulta salió
+desde otro. Se ve rápido comparando las dos tablas:
+
+```bash
+aws dynamodb scan --table-name hop-hackathon-conversations --query 'Items[].phone.S'
+aws dynamodb scan --table-name hop-hackathon-packages --query 'Items[].phone.S' --output text | tr '\t' '\n' | sort -u
+```
+
+Si el teléfono que escribió no está en la segunda lista, creale un paquete sin resembrar:
+
+```bash
+npm run add:package -- +54911XXXXXXXX --name Lean --point hop-belgrano --days 3
+```
+
+**Antes de la demo**: confirmá desde qué teléfono vas a escribir y que tenga paquetes.
