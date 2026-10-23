@@ -99,7 +99,7 @@ describe('createHopAgent', () => {
     const agent = createHopAgent({ repos: {} as Repos, phone: PHONE, region: 'us-east-1' });
     expect(agent.tools.map((t) => t.name).sort()).toEqual([
       'change_hop_point',
-      'create_package',
+      'confirm_dropoff',
       'extend_deadline',
       'get_calendar',
       'get_hop_point',
@@ -108,6 +108,7 @@ describe('createHopAgent', () => {
       'list_hop_points',
       'request_return',
       'reschedule_delivery',
+      'send_package',
     ]);
   });
 
@@ -118,11 +119,24 @@ describe('createHopAgent', () => {
     expect(SYSTEM_PROMPT).toMatch(/más de un paquete/);
   });
 
-  it('cuando no encuentra el paquete, ofrece crear uno de prueba sin delatar de quién es', () => {
-    expect(SYSTEM_PROMPT).toMatch(/no encontrás el paquete/);
-    expect(SYSTEM_PROMPT).toMatch(/ofrecele crear uno de prueba con create_package/);
-    // Un tracking ajeno tiene que verse igual que uno inexistente.
+  it('sin paquetes registra uno ya esperando en el punto, sin anunciarlo ni llamarlo de prueba', () => {
+    expect(SYSTEM_PROMPT).toMatch(/registrale uno con send_package y arrived: true/);
+    expect(SYSTEM_PROMPT).toMatch(/Nunca digas que es "de prueba"/);
+  });
+
+  it('enviar un paquete son dos pasos: en camino y después dejado en el punto', () => {
+    expect(SYSTEM_PROMPT).toMatch(/Preguntale a qué Punto HOP quiere llevarlo/);
+    expect(SYSTEM_PROMPT).toMatch(/SIN arrived: queda en camino/);
+    expect(SYSTEM_PROMPT).toMatch(/Cuando confirme que lo dejó, llamá confirm_dropoff/);
+  });
+
+  it('un tracking ajeno se ve igual que uno inexistente', () => {
     expect(SYSTEM_PROMPT).toMatch(/No aclares de quién es un paquete que no es suyo/);
+  });
+
+  it('contesta en inglés por defecto y sigue el idioma del cliente', () => {
+    expect(SYSTEM_PROMPT).toMatch(/contestá en inglés por defecto/);
+    expect(SYSTEM_PROMPT).toMatch(/Si el cliente escribe en otro idioma, contestale en ese idioma/);
   });
 
   it('pide effort low: Sonnet 5.5 piensa por defecto y en un chat de seguimiento eso solo suma latencia', () => {
