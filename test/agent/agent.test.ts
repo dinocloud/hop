@@ -99,6 +99,7 @@ describe('createHopAgent', () => {
     const agent = createHopAgent({ repos: {} as Repos, phone: PHONE, region: 'us-east-1' });
     expect(agent.tools.map((t) => t.name).sort()).toEqual([
       'change_hop_point',
+      'create_package',
       'extend_deadline',
       'get_calendar',
       'get_hop_point',

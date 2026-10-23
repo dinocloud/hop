@@ -138,6 +138,7 @@ Lo interesante para mostrar: la persona contesta el aviso y el agente resuelve s
 
 | Qué escribir | Qué tiene que hacer |
 |---|---|
+| "creame un paquete de prueba" | `create_package` — alta a nombre del teléfono que escribe, listo para retirar |
 | "no llego, ¿me das más días?" | `extend_deadline` — corre el plazo, mismo punto |
 | "¿lo pueden mandar a Belgrano?" | `change_hop_point` — pasa a `IN_TRANSIT` en el punto nuevo |
 | "mejor que llegue el viernes" | `reschedule_delivery` — `IN_TRANSIT` con `scheduledAt` |
@@ -222,7 +223,12 @@ aws dynamodb scan --table-name hop-hackathon-conversations --query 'Items[].phon
 aws dynamodb scan --table-name hop-hackathon-packages --query 'Items[].phone.S' --output text | tr '\t' '\n' | sort -u
 ```
 
-Si el teléfono que escribió no está en la segunda lista, creale un paquete sin resembrar:
+Si el teléfono que escribió no está en la segunda lista hay dos salidas:
+
+**Desde el propio chat** (lo más rápido, y lo que va a hacer la gente en la demo): pedirle al bot
+*"creame un paquete de prueba"*. El agente usa `create_package` con el teléfono de la conversación.
+
+**Desde la terminal**, si preferís controlar los datos:
 
 ```bash
 npm run add:package -- +54911XXXXXXXX --name Lean --point hop-belgrano --days 3

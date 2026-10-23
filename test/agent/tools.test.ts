@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createTools } from '../../agent/src/tools.js';
-import type { Repos } from '../../src/lib/dynamo.js';
+import { CREATE_ATTEMPTS, createTools } from '../../agent/src/tools.js';
+import { TrackingIdTakenError, type Repos } from '../../src/lib/dynamo.js';
 import type { HopPoint, Package } from '../../src/lib/types.js';
 
 const PHONE = '+5491112345678';
@@ -39,6 +39,7 @@ function setup() {
     getPackage: vi.fn(async (id: string) => ({ 'HOP-0001': mine, 'HOP-0002': theirs })[id]),
     getHopPoint: vi.fn(async (id: string) => (id === 'hop-palermo' ? palermo : undefined)),
     listHopPoints: vi.fn(async () => [belgrano, caballito, palermo]),
+    createPackage: vi.fn(async (pkg: Package) => pkg),
   } as unknown as Repos;
   const tools = createTools({ repos, phone: PHONE, now: () => NOW });
   type AnyTool = { invoke(input: unknown): Promise<unknown> };
@@ -47,9 +48,10 @@ function setup() {
 }
 
 describe('tools del agente', () => {
-  it('expone exactamente las cinco tools de consulta', () => {
+  it('expone exactamente las tools de consulta y el alta de prueba', () => {
     const { byName } = setup();
     expect(Object.keys(byName).sort()).toEqual([
+      'create_package',
       'get_calendar',
       'get_hop_point',
       'get_my_packages',
@@ -141,5 +143,67 @@ describe('tools del agente', () => {
       },
     });
     expect(await byName['get_hop_point']!.invoke({ hopPointId: 'hop-nope' })).toEqual({ found: false });
+  });
+
+  describe('create_package', () => {
+    it('crea el paquete a nombre del teléfono de la sesión, nunca de uno que digan', async () => {
+      const { repos, byName } = setup();
+      const res = (await byName.create_package!.invoke({})) as { created: boolean };
+      expect(res.created).toBe(true);
+      const created = vi.mocked(repos.createPackage).mock.calls[0]![0];
+      expect(created.phone).toBe(PHONE);
+    });
+
+    it('lo deja listo para retirar, que es el estado donde sirven las acciones', async () => {
+      const { repos, byName } = setup();
+      await byName.create_package!.invoke({});
+      expect(vi.mocked(repos.createPackage).mock.calls[0]![0].status).toBe('READY_AT_HOP');
+    });
+
+    it('usa el Punto HOP pedido', async () => {
+      const { repos, byName } = setup();
+      await byName.create_package!.invoke({ hopPointId: 'hop-caballito' });
+      expect(vi.mocked(repos.createPackage).mock.calls[0]![0].hopPointId).toBe('hop-caballito');
+    });
+
+    it('elige uno solo si no se lo piden', async () => {
+      const { repos, byName } = setup();
+      await byName.create_package!.invoke({});
+      expect(vi.mocked(repos.createPackage).mock.calls[0]![0].hopPointId).toBeTruthy();
+    });
+
+    it('avisa cuáles hay cuando el punto no existe, sin crear nada', async () => {
+      const { repos, byName } = setup();
+      const res = (await byName.create_package!.invoke({ hopPointId: 'hop-marte' })) as { created: boolean; available: string[] };
+      expect(res.created).toBe(false);
+      expect(res.available).toContain('hop-palermo');
+      expect(repos.createPackage).not.toHaveBeenCalled();
+    });
+
+    it('el plazo vence a las 23:59 de Buenos Aires del día N', async () => {
+      const { repos, byName } = setup();
+      await byName.create_package!.invoke({ deadlineDays: 3 });
+      // NOW es sábado 17/10 09:00 BA; +3 días es martes 20/10 23:59 BA = 21/10 02:59:59Z.
+      expect(vi.mocked(repos.createPackage).mock.calls[0]![0].deadlineAt).toBe('2026-10-21T02:59:59.000Z');
+    });
+
+    it('reintenta con otro tracking si el primero estaba tomado', async () => {
+      const { repos, byName } = setup();
+      vi.mocked(repos.createPackage)
+        .mockRejectedValueOnce(new TrackingIdTakenError('HOP-1234'))
+        .mockImplementationOnce(async (pkg: Package) => pkg);
+      const res = (await byName.create_package!.invoke({})) as { created: boolean };
+      expect(res.created).toBe(true);
+      expect(repos.createPackage).toHaveBeenCalledTimes(2);
+    });
+
+    it('se rinde con un motivo si no consigue un tracking libre', async () => {
+      const { repos, byName } = setup();
+      vi.mocked(repos.createPackage).mockRejectedValue(new TrackingIdTakenError('HOP-1234'));
+      const res = (await byName.create_package!.invoke({})) as { created: boolean; reason: string };
+      expect(res.created).toBe(false);
+      expect(res.reason).toMatch(/número de seguimiento/);
+      expect(repos.createPackage).toHaveBeenCalledTimes(CREATE_ATTEMPTS);
+    });
   });
 });

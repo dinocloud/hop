@@ -217,6 +217,12 @@ El agente de seguimiento para el cliente final corre en **Amazon Bedrock AgentCo
   - `get_hop_point`;
   - `list_hop_points`: ordenados por cercanía al punto actual;
   - `get_calendar`: hoy y los próximos 14 días.
+  - `create_package`: da de alta un paquete de prueba **a nombre del teléfono de la sesión**, listo para
+    retirar. En el dominio real los paquetes los crea el sistema de envíos, no el cliente: existe para
+    que cualquiera pueda probar el bot desde su celular durante el hackathon sin que alguien del equipo
+    le siembre datos a mano. El tracking es `HOP-` + 4 dígitos al azar desde 1000, para no escanear la
+    tabla en cada alta ni pisar la numeración del seed; la colisión la corta la condición del put y se
+    reintenta. **Sacarla antes de cualquier uso que no sea la demo.**
 
   Las tools no devuelven teléfonos ni datos internos.
 - **Tools de resolución** (`agent/src/actions.ts`): extender el plazo, cambiar de punto, reprogramar y devolver. Ver [Acciones del agente](#acciones-del-agente-resolución-del-aviso). Las fechas van ya escritas en hora de Buenos Aires (`deadlineLocal`, `scheduledLocal`, `daysLeft`), porque el plazo vence a las 23:59 de BA, que en ISO UTC es el día siguiente.
