@@ -104,6 +104,9 @@ export function createHandler(deps: HookDeps) {
     try {
       const current = await deps.repos.getPackage(trackingId);
       if (!current) return json(404, { error: `No existe el paquete ${trackingId}` });
+      // Al contexto, no suelto por línea: así una query por teléfono trae la invocación entera
+      // y no solo las dos líneas que lo mencionan.
+      logger.appendKeys({ phone: maskPhone(current.phone) });
 
       if (current.status === body.status && isTerminalStatus(current.status)) {
         logger.info('Estado terminal repetido, sin cambios', { status: current.status });
@@ -119,7 +122,7 @@ export function createHandler(deps: HookDeps) {
         const pkg = await deps.repos.updatePackageStatus(trackingId, { status: body.status, resetReadyNotification: true }, now(), {
           expectedUpdatedAt: current.updatedAt,
         });
-        logger.info('Estado actualizado', { status: pkg.status, phone: maskPhone(pkg.phone) });
+        logger.info('Estado actualizado', { status: pkg.status });
         return json(202, { trackingId, status: pkg.status, notified: false });
       }
 
@@ -155,7 +158,7 @@ export function createHandler(deps: HookDeps) {
         at,
         { expectedUpdatedAt: current.updatedAt },
       );
-      logger.info('Estado actualizado', { status: pkg.status, hopPointId: pkg.hopPointId, phone: maskPhone(pkg.phone) });
+      logger.info('Estado actualizado', { status: pkg.status, hopPointId: pkg.hopPointId });
 
       return await notifyReady(pkg, hopPoint.name, body.deadlineDays!, at);
     } catch (err) {
@@ -181,7 +184,8 @@ export function createHandler(deps: HookDeps) {
       return onSendFailed(pkg, err, at);
     }
     metrics.addMetric(METRIC_TEMPLATE_SENT, MetricUnit.Count, 1);
-    logger.info('Plantilla enviada', { template: deps.templateName, messageId });
+    logger.appendKeys({ messageId });
+    logger.info('Plantilla enviada', { template: deps.templateName });
 
     try {
       await deps.repos.markReadyNotification(pkg.trackingId, { status: 'SENT', messageId }, at);

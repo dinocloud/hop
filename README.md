@@ -389,12 +389,16 @@ Todo en `us-east-1`, cuenta `359328299440`.
 
 ### Log groups
 
-| Qué | Log group |
-|---|---|
-| Lambda inbound (mensajes entrantes) | `/aws/lambda/hop-hackathon-inbound-router` |
-| Lambda del hook (estado del paquete) | `/aws/lambda/hop-hackathon-package-status-hook` |
-| Runtime del agente | `/aws/bedrock-agentcore/runtimes/<runtimeId>-DEFAULT` |
-| Access logs de API Gateway | `/aws/apigateway/hop-hackathon-api-access` |
+| Qué | Log group | Consola |
+|---|---|---|
+| Lambda inbound (mensajes entrantes) | `/aws/lambda/hop-hackathon-inbound-router` | [abrir](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Flambda$252Fhop-hackathon-inbound-router) |
+| Lambda del hook (estado del paquete) | `/aws/lambda/hop-hackathon-package-status-hook` | [abrir](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Flambda$252Fhop-hackathon-package-status-hook) |
+| Runtime del agente | `/aws/bedrock-agentcore/runtimes/<runtimeId>-DEFAULT` | [buscar](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups$3FlogGroupNameFilter$3Dhop_hackathon_agent) |
+| Access logs de API Gateway | `/aws/apigateway/hop-hackathon-api-access` | [abrir](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Fapigateway$252Fhop-hackathon-api-access) |
+
+Otros atajos: [Logs Insights](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:logs-insights) ·
+[Trazas de X-Ray](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#xray:traces/query) ·
+[Alarmas](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#alarmsV2:?search=hop-hackathon)
 
 El del runtime lleva el id, que cambia en cada recreación:
 
@@ -415,6 +419,9 @@ Las Lambdas loguean JSON con Powertools. El contexto que importa:
 | `messageId` | inbound-router | el `wamid...` de WhatsApp, único por mensaje |
 | `sessionId` | inbound-router | enlaza los logs de la Lambda con los del runtime del agente |
 | `trackingId` | package-status-hook | el paquete que se está tocando |
+
+Las cuatro van con `appendKeys`, o sea que aparecen en **todas** las líneas de esa invocación,
+no solo en la que las menciona: una query por teléfono trae la traza entera.
 
 Para seguir a una persona, por los últimos 4 dígitos de su teléfono:
 
