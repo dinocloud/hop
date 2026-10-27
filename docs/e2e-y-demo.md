@@ -11,12 +11,17 @@ Card: [Prueba E2E con número de testing + guión de demo](https://app.clickup.c
 | Flujo | Estado |
 |---|---|
 | A — consulta (entrante → agente → texto + ubicación) | ✅ verificado 2026-10-22 |
-| B — aviso proactivo (hook → plantilla) | ⏳ espera la plantilla aprobada en Meta |
-| C — resolución desde el chat (`extend_deadline`) | ✅ verificado 2026-10-22 |
+| B — aviso proactivo (hook → plantilla) | ✅ verificado 2026-10-27 |
+| C — resolución desde el chat | ✅ verificado 2026-10-22 (`extend_deadline`) y 2026-10-26 (las otras tres) |
 
-Del Flujo C se probó `extend_deadline`. Las otras tres acciones (`change_hop_point`,
-`reschedule_delivery`, `request_return`) comparten el mismo camino —el agente confirma y
-escribe en `Packages`— pero no se ejercitaron contra el stack.
+El Flujo B se probó con un paquete nuevo para un teléfono del equipo. El hook respondió `202`
+con `notified: true`, el paquete quedó con `readyNotificationStatus: SENT` y la plantilla
+llegó con las tres variables en su lugar.
+
+Para el Flujo C, `change_hop_point`, `reschedule_delivery` y `request_return` se probaron
+invocando el runtime directo, con paquetes descartables. Las tres pidieron confirmación y no
+escribieron nada con el preview. Con el "sí", dejaron en `Packages` lo que dice la tabla de
+acciones del README.
 
 ## Antes de empezar
 
@@ -109,7 +114,7 @@ npm run publish:inbound -- +54911XXXXXXXX "¿dónde está mi paquete?"
 
 ## Flujo B — aviso proactivo (hook → plantilla)
 
-Depende de que `paquete_listo` esté aprobada en Meta.
+La plantilla `paquete_listo` está aprobada en Meta desde el 2026-10-23.
 
 ```bash
 API_URL=$(aws cloudformation describe-stacks --stack-name hop-hackathon-dev \
@@ -123,14 +128,24 @@ curl -s -X POST "${API_URL}packages/HOP-0003/status" \
   -d '{"status":"READY_AT_HOP","hopPointId":"hop-palermo","deadlineDays":5}' | jq .
 ```
 
-**Esperado**: `202` con `notified: true` y un `messageId`, y la plantilla llega al teléfono.
+**Esperado**: `202` con `notified: true` y un `messageId`, y la plantilla llega al teléfono:
 
-Si vuelve `notified: false`, la plantilla no está aprobada todavía. El estado igual quedó
-guardado y queda `readyNotificationStatus: FAILED` en el paquete; repetir el mismo POST
-cuando Meta apruebe la reenvía.
+> Hola Carla, tu paquete ya está en Punto HOP Palermo. Tenés 5 días para retirarlo. Si
+> necesitás más tiempo, cambiar de punto o reprogramar, respondé este mensaje.
+
+Si vuelve `notified: false`, el envío falló. El estado igual quedó guardado, con
+`readyNotificationStatus: FAILED` y el motivo en `readyNotificationError`. Repetir el mismo
+POST reintenta el envío.
 
 Usar `HOP-0003` y no `HOP-0001`: el seed deja a `HOP-0001` ya en `READY_AT_HOP`, y un repetido
 para el mismo punto responde `duplicate: true` sin reenviar nada.
+
+Para mandar la plantilla a otro teléfono sin tocar el seed, crear un paquete en camino y usar
+su `trackingId` en el POST:
+
+```bash
+npm run add:package -- +54911XXXXXXXX --name Ana --status IN_TRANSIT
+```
 
 ## Flujo C — resolución desde el chat
 
@@ -204,7 +219,7 @@ confirmación y recién ahí escribe. Mostrar el `get-item` con el `deadlineAt` 
 diferencia entre que lo diga y que lo haga.
 Después: *"actually, send it to Belgrano"* → cambia de punto y el paquete vuelve a `IN_TRANSIT`.
 
-**5. El aviso proactivo** (30 s, si la plantilla está aprobada)
+**5. El aviso proactivo** (30 s)
 Correr el POST del Flujo B. La plantilla llega sola: la disparó el sistema de envíos, no una
 persona.
 
@@ -218,7 +233,8 @@ Runtime con deploy de código directo, sin contenedor; y el modelo nunca inventa
 | Síntoma | Causa más probable | Qué hacer |
 |---|---|---|
 | "No encontré el paquete" | **estás escribiendo desde un teléfono sin paquetes asociados** | ver abajo |
-| La plantilla no llega | no está aprobada en Meta | seguir con el Flujo A, que no la necesita |
+| La plantilla no llega y el POST dijo `duplicate: true` | ese paquete ya tenía el aviso enviado para ese punto | repetir con un paquete en camino (`HOP-0003` o uno nuevo de `add:package`) |
+| La plantilla no llega y el POST dijo `notified: false` | falló el envío; el motivo está en `readyNotificationError` | seguir con el Flujo A, que no la necesita |
 | No contesta la consulta | ventana de 24 h cerrada | escribir desde el teléfono primero |
 | Tarda y responde la disculpa | sesión de AgentCore levantando | reintentar; el primer mensaje después de 15 min de inactividad es el lento |
 | Dos mensajes seguidos y el segundo se disculpa | se encolan por sesión y el segundo se queda sin tiempo | mandar de a uno en la demo |
