@@ -159,6 +159,9 @@ export function createHandler(deps: RouterDeps) {
       let sentSomething = false;
       try {
         const conversation = await deps.repos.touchInbound(message.from, message.sentAt);
+        // El sessionId es la clave para seguir una conversación entera en Logs Insights:
+        // enlaza los logs de la Lambda con los del runtime de AgentCore.
+        if (conversation.sessionId) logger.appendKeys({ sessionId: conversation.sessionId });
         if (!isWithinWindow({ phone: message.from, lastInboundAt: message.sentAt.toISOString() }, now())) {
           logger.warn('Mensaje más viejo que la ventana de 24 h; no se puede responder');
           metrics.addMetric(METRICS.stale, MetricUnit.Count, 1);

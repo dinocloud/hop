@@ -383,6 +383,102 @@ curl -s -X POST "${API_URL}packages/HOP-0001/status" \
   -d '{"status":"READY_AT_HOP","hopPointId":"hop-palermo","deadlineDays":5}'
 ```
 
+## Observabilidad
+
+Todo en `us-east-1`, cuenta `359328299440`.
+
+### Log groups
+
+| Qué | Log group | Consola |
+|---|---|---|
+| Lambda inbound (mensajes entrantes) | `/aws/lambda/hop-hackathon-inbound-router` | [abrir](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Flambda$252Fhop-hackathon-inbound-router) |
+| Lambda del hook (estado del paquete) | `/aws/lambda/hop-hackathon-package-status-hook` | [abrir](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Flambda$252Fhop-hackathon-package-status-hook) |
+| Runtime del agente | `/aws/bedrock-agentcore/runtimes/<runtimeId>-DEFAULT` | [buscar](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups$3FlogGroupNameFilter$3Dhop_hackathon_agent) |
+| Access logs de API Gateway | `/aws/apigateway/hop-hackathon-api-access` | [abrir](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Fapigateway$252Fhop-hackathon-api-access) |
+
+Otros atajos: [Logs Insights](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:logs-insights) ·
+[Trazas de X-Ray](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#xray:traces/query) ·
+[Alarmas](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#alarmsV2:?search=hop-hackathon)
+
+El del runtime lleva el id, que cambia en cada recreación:
+
+```bash
+aws logs describe-log-groups --log-group-name-prefix /aws/bedrock-agentcore/runtimes/hop_hackathon_agent \
+  --query 'logGroups[].logGroupName' --output text
+```
+
+Las Lambdas tienen X-Ray activo: las trazas salen en la consola de CloudWatch, en Traces.
+
+### Seguir una conversación
+
+Las Lambdas loguean JSON con Powertools. El contexto que importa:
+
+| Clave | Dónde | Para qué |
+|---|---|---|
+| `phone` | inbound-router | **enmascarado**: `***6395`. Nunca se loguea el número completo |
+| `messageId` | inbound-router | el `wamid...` de WhatsApp, único por mensaje |
+| `sessionId` | inbound-router | enlaza los logs de la Lambda con los del runtime del agente |
+| `trackingId` | package-status-hook | el paquete que se está tocando |
+
+Las cuatro van con `appendKeys`, o sea que aparecen en **todas** las líneas de esa invocación,
+no solo en la que las menciona: una query por teléfono trae la traza entera.
+
+Para seguir a una persona, por los últimos 4 dígitos de su teléfono:
+
+```
+fields @timestamp, level, message, messageId, sessionId, @message
+| filter phone = "***6395"
+| sort @timestamp asc
+| limit 200
+```
+
+Desde la terminal, sobre las dos Lambdas a la vez:
+
+```bash
+aws logs start-query --region us-east-1 \
+  --log-group-names /aws/lambda/hop-hackathon-inbound-router /aws/lambda/hop-hackathon-package-status-hook \
+  --start-time $(( $(date +%s) - 3600 )) --end-time $(date +%s) \
+  --query-string 'fields @timestamp, level, message, messageId, sessionId | filter phone = "***6395" | sort @timestamp asc | limit 200'
+# después, con el queryId que devuelve:
+aws logs get-query-results --region us-east-1 --query-id <queryId>
+```
+
+Con el `sessionId` que salga de ahí se sigue el otro lado, en el log del runtime:
+
+```
+fields @timestamp, msg, reqId, chars
+| filter phone like /1985$/
+| sort @timestamp asc
+```
+
+> El runtime **no loguea el contenido de los mensajes**, solo metadatos: teléfono enmascarado,
+> cantidad de caracteres, tiempo de respuesta. Para reconstruir una conversación hay que
+> mirar el chat de WhatsApp; los logs sirven para saber si llegó, cuánto tardó y si falló.
+
+### Alarmas
+
+Todas en CloudWatch, sin acción de notificación (es una demo: se miran en la consola).
+
+| Alarma | Qué significa |
+|---|---|
+| `hop-hackathon-inbound-router-errors` | la Lambda se cayó: excepción, timeout u OOM |
+| `hop-hackathon-package-status-hook-errors` | ídem, en el hook |
+| `hop-hackathon-inbound-dlq-not-empty` | hay mensajes de clientes sin procesar |
+| `hop-hackathon-inbound-parse-error` | eventos de WhatsApp con formato desconocido: se descartan mensajes |
+| `hop-hackathon-reply-failed` | no se pudo enviar la respuesta |
+| `hop-hackathon-reply-delivery-failed` | Meta no pudo entregarla (`status: failed`) |
+| `hop-hackathon-agent-failed` | el agente falló y se respondió la disculpa genérica |
+| `hop-hackathon-template-send-failed` | falló el envío de la plantilla "paquete listo" |
+
+Las primeras dos y las otras seis cubren cosas distintas, y las dos hacen falta: las métricas
+propias solo se emiten si la Lambda sigue viva para emitirlas. Si se cae antes —timeout, OOM,
+una excepción en el arranque— la única que se entera es la métrica `Errors` de Lambda.
+
+```bash
+aws cloudwatch describe-alarms --region us-east-1 --alarm-name-prefix hop-hackathon \
+  --query 'MetricAlarms[].{alarma:AlarmName,estado:StateValue}' --output table
+```
+
 ## Criterios AWS que sigue el proyecto
 
 - **IAM de mínimo privilegio**: permisos de DynamoDB por tabla y por acción, `SendWhatsAppMessage` acotado al ARN del número, roles propios por Lambda con escritura de logs limitada a su log group (sin `AWSLambdaBasicExecutionRole`). Un test del stack falla si aparece un `Resource: "*"` que no sea de X-Ray.

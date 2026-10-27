@@ -511,6 +511,24 @@ export class HopStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
+    // Las alarmas de arriba cubren caminos que el código reconoce y mide. Esta cubre lo otro:
+    // una excepción no manejada, un timeout, un out of memory. Sin esto, una Lambda que se cae
+    // antes de llegar a emitir su métrica no dispara nada.
+    for (const [id, fn, service] of [
+      ['InboundRouterErrorsAlarm', this.inboundRouterFn, 'inbound-router'],
+      ['PackageStatusHookErrorsAlarm', this.packageStatusHookFn, 'package-status-hook'],
+    ] as const) {
+      new cloudwatch.Alarm(this, id, {
+        alarmName: `${PREFIX}-${service}-errors`,
+        alarmDescription: `La Lambda ${PREFIX}-${service} terminó con error (excepción, timeout u OOM)`,
+        metric: fn.metricErrors({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+        threshold: 0,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    }
+
     // ----------------------------------------------------------------------
     // API: hook de estado del paquete
     // ----------------------------------------------------------------------
