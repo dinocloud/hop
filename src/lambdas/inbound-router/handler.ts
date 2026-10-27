@@ -174,6 +174,10 @@ export function createHandler(deps: RouterDeps) {
         sentSomething = await sendReply(message.from, reply);
         await complete(message.messageId);
         metrics.addMetric(fixedReply !== undefined ? METRICS.unsupported : METRICS.processed, MetricUnit.Count, 1);
+        // Una línea por mensaje atendido. Sin esto el camino feliz no emite nada al logger —
+        // solo métricas EMF— y `phone`/`sessionId` quedan en el contexto sin aparecer en ningún
+        // lado: una query por teléfono solo encontraría las conversaciones que fallaron.
+        logger.info('Mensaje atendido', { withLocation: reply.location !== null });
       } catch (err) {
         if (sentSomething) {
           // Ya le llegó algo al cliente: no se reintenta para no duplicar.

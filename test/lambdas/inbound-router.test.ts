@@ -1,5 +1,6 @@
 import type { Context, SNSEvent } from 'aws-lambda';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { logger } from '../../src/lib/logger.js';
 import { FALLBACK_REPLY } from '../../src/lib/agent-contract.js';
 import type { AgentClient } from '../../src/lib/agentcore.js';
 import type { Repos } from '../../src/lib/dynamo.js';
@@ -257,5 +258,29 @@ describe('inbound-router', () => {
     await ctx.handler(snsEvent(inbound()));
     expect(ctx.agent.invoke).not.toHaveBeenCalled();
     expect(ctx.sender.sendText).toHaveBeenCalledWith(PHONE, FALLBACK_REPLY.text);
+  });
+
+  describe('contexto de los logs', () => {
+    it('el camino feliz emite una línea con phone enmascarado y sessionId', async () => {
+      const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
+      const keys = vi.spyOn(logger, 'appendKeys').mockImplementation(() => {});
+      try {
+        const ctx = setup();
+        vi.mocked(ctx.agent.invoke).mockResolvedValueOnce({ text: 'Está en Palermo', location: null });
+        await ctx.handler(snsEvent(inbound()), lambdaContext());
+
+        // Sin esta línea, phone y sessionId quedan en el contexto sin emitirse nunca: una query
+        // por teléfono solo encontraría las conversaciones que fallaron.
+        expect(info).toHaveBeenCalledWith('Mensaje atendido', expect.anything());
+
+        const applied = Object.assign({}, ...keys.mock.calls.map(([k]) => k));
+        expect(applied.phone).toBe('***5678');
+        expect(applied.phone).not.toContain('5491112345678');
+        expect(applied.sessionId).toBe(SESSION);
+      } finally {
+        info.mockRestore();
+        keys.mockRestore();
+      }
+    });
   });
 });
