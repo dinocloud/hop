@@ -295,10 +295,29 @@ describe('HopStack', () => {
       'hop-hackathon-agent-failed',
       'hop-hackathon-inbound-dlq-not-empty',
       'hop-hackathon-inbound-parse-error',
+      'hop-hackathon-inbound-router-errors',
+      'hop-hackathon-package-status-hook-errors',
       'hop-hackathon-reply-delivery-failed',
       'hop-hackathon-reply-failed',
       'hop-hackathon-template-send-failed',
     ]);
+  });
+
+  it('alarma también los fallos que el código no llega a medir: excepción, timeout, OOM', () => {
+    // Las métricas propias (ReplyFailed, AgentFailed...) solo se emiten si la Lambda sigue viva.
+    // La métrica Errors de Lambda cubre el caso en que se cae antes.
+    for (const fn of ['inbound-router', 'package-status-hook']) {
+      template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: `hop-hackathon-${fn}-errors`,
+        Namespace: 'AWS/Lambda',
+        MetricName: 'Errors',
+        Statistic: 'Sum',
+        Period: 300,
+        Threshold: 0,
+        ComparisonOperator: 'GreaterThanThreshold',
+        EvaluationPeriods: 1,
+      });
+    }
   });
 
   it('gestiona el log group de ejecución de API Gateway con retención', () => {
