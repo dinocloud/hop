@@ -1,6 +1,6 @@
 # Usage guide: WhatsApp package-tracking agent
 
-> DinoCloud Internal - Confidential · Hackathon PoC · all data is synthetic
+> DinoCloud Internal - Confidential · Hackathon PoC · synthetic data, except your phone number
 
 A WhatsApp agent that tells customers where their package is. Customers can also sort out the pickup on their own: more time, another pickup point, a new delivery date, or a return. When a package reaches its pickup point, the customer gets a WhatsApp notice without asking for it.
 
@@ -10,7 +10,8 @@ A WhatsApp agent that tells customers where their package is. Customers can also
 
 Write to **+54 9 11 6842-1638** on WhatsApp from your own phone, or open [wa.me/5491168421638](https://wa.me/5491168421638).
 
-- **No setup.** The first time you write, the agent creates a package for your phone, waiting at the Palermo pickup point. The other two pickup points are in Belgrano and Caballito.
+- **No setup.** The first time you write, the agent creates a package for your phone, waiting at one of the three pickup points: Palermo, Belgrano or Caballito.
+- **Your number is saved.** The test environment keeps your phone number with your packages and your chat's state, plus your name if you tell the agent. Logs show only its last 4 digits. Ask the team if you want it deleted.
 - **English by default.** If you write in Spanish, it answers in Spanish for the rest of the chat.
 - **One message at a time.** Wait for each reply before you send the next message.
 
@@ -24,8 +25,8 @@ Send these in order, in the same chat. Each row is one message.
 | 2 | `Can I have 3 more days?` | It tells you the new deadline and asks you to confirm. Nothing is saved yet. |
 | 3 | `Yes` | The deadline moves. You can add 1 to 7 days. |
 | 4 | `Can I pick it up somewhere else?` | It lists the other pickup points, nearest first, with distance, address and opening hours. |
-| 5 | `Belgrano, please` | It asks you to confirm the change. |
-| 6 | `Yes` | The package goes back in transit to Belgrano, with no deadline until it arrives. |
+| 5 | `Belgrano, please` | It asks you to confirm the change. If your package is already in Belgrano, pick another point from the list. |
+| 6 | `Yes` | The package goes back in transit to the new point, with no deadline until it arrives. |
 | 7 | `Can you deliver it on Friday?` | It confirms the date and asks again. Any day from tomorrow to 14 days ahead works. |
 | 8 | `Yes` | Delivery is rescheduled and the package stays in transit. |
 | 9 | `I want to return it` | It warns you that a return is final and asks you to confirm. |
@@ -72,6 +73,6 @@ The template is in Spanish, as Meta approved it. Testers can't trigger it, becau
 |---|---|---|
 | "Perdón, tuve un problema para consultar tu paquete…" | The agent was starting up, or two messages arrived too close together. | Wait a few seconds, then send one message. |
 | "I can't find your package" | You wrote from another phone, or gave a tracking number that isn't yours. | Ask `Where is my package?` without a tracking number. |
-| No reply after 30 seconds | Something failed along the way. | Tell the team the time you wrote. They can follow your chat in the logs. |
+| No reply after about a minute | Something failed along the way. | Tell the team the time you wrote. They can follow your chat in the logs. |
 
 For the team: [E2E runbook and demo script](e2e-y-demo.md) · [follow a conversation in CloudWatch](../README.md#seguir-una-conversación).

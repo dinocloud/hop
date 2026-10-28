@@ -1,12 +1,13 @@
-#!/usr/bin/env python
 """
 WhatsApp package-tracking agent: what talks to what.
 
-Run with the aws-diagram skill's venv, from the repo root:
+Needs the aws-diagram skill from the DinoCloud toolkit: its setup.sh creates a venv with
+`diagrams` and copies the `aws_diagram_theme` module into it. Then, from the repo root:
     ~/.dino/aws-diagram/.venv/bin/python docs/diagrams/architecture.py
 
-Writes docs/diagrams/architecture.png and .svg. The source of truth is infra/lib/hop-stack.ts:
-update this file when the stack changes.
+Writes docs/diagrams/architecture.png. No SVG on purpose: graphviz links each icon by its absolute
+path on the machine that rendered it, so the SVG shows no icons anywhere else. The source of truth
+is infra/lib/hop-stack.ts: update this file when the stack changes.
 """
 
 import os
@@ -29,6 +30,7 @@ with diagram(
     "WhatsApp package-tracking agent",
     outdir=OUTDIR,
     filename="architecture",
+    formats=("png",),
     direction="LR",
     caption="Hackathon PoC · synthetic data",
     confidential=True,
