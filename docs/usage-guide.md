@@ -10,7 +10,7 @@ A WhatsApp agent that tells customers where their package is. Customers can also
 
 Write to **+54 9 11 6842-1638** on WhatsApp from your own phone, or open [wa.me/5491168421638](https://wa.me/5491168421638).
 
-- **No setup.** The first time you write, the agent creates a package for your phone. It waits at one of the three pickup points: Palermo, Belgrano or Caballito.
+- **No setup.** The first time you write, the agent creates a package for your phone, waiting at the Palermo pickup point. The other two pickup points are in Belgrano and Caballito.
 - **English by default.** If you write in Spanish, it answers in Spanish for the rest of the chat.
 - **One message at a time.** Wait for each reply before you send the next message.
 
@@ -23,9 +23,9 @@ Send these in order, in the same chat. Each row is one message.
 | 1 | `Where is my package?` | Status, pickup point, address, opening hours and pickup deadline, plus a map pin of the pickup point. |
 | 2 | `Can I have 3 more days?` | It tells you the new deadline and asks you to confirm. Nothing is saved yet. |
 | 3 | `Yes` | The deadline moves. You can add 1 to 7 days. |
-| 4 | `Can I pick it up somewhere else?` | It lists the nearest pickup points, with address and opening hours. |
+| 4 | `Can I pick it up somewhere else?` | It lists the other pickup points, nearest first, with distance, address and opening hours. |
 | 5 | `Belgrano, please` | It asks you to confirm the change. |
-| 6 | `Yes` | The package goes back in transit to Belgrano. You'll get a new notice when it arrives. |
+| 6 | `Yes` | The package goes back in transit to Belgrano, with no deadline until it arrives. |
 | 7 | `Can you deliver it on Friday?` | It confirms the date and asks again. Any day from tomorrow to 14 days ahead works. |
 | 8 | `Yes` | Delivery is rescheduled and the package stays in transit. |
 | 9 | `I want to return it` | It warns you that a return is final and asks you to confirm. |
@@ -43,9 +43,10 @@ Then try the other side, sending a package:
 
 | Send | What should happen |
 |---|---|
-| A tracking number that isn't yours, like `ABC-1234` | "I can't find that package." It never shows someone else's package. |
+| A tracking number that isn't yours, like `ABC-1234` or another tester's | It says it can't find that package. It never shows someone else's package. |
 | Something unrelated, like `What's the weather?` | One line with what it can do for you. |
-| A city with no pickup points, like `Can you send it to Rosario?` | It says there is no pickup point there and offers the nearest ones. |
+| A city with no pickup points, like `Can you send it to Rosario?` | It says there is no pickup point there and lists the three it has, all in Buenos Aires. |
+| More days than allowed, like `Can I have 10 more days?` | It says the limit is 7 days and offers 7 instead. |
 | `No` when it asks you to confirm | Nothing changes. |
 | A photo, audio or sticker | A fixed reply in Spanish: "Por ahora solo puedo leer mensajes de texto…" |
 
@@ -60,8 +61,8 @@ The template is in Spanish, as Meta approved it. Testers can't trigger it, becau
 ## Good to know
 
 - **Your packages only.** The agent only sees the packages linked to the phone you write from.
-- **Every change needs a "yes".** The first reply is a preview, and nothing is saved until you confirm in your next message.
-- **More than one package.** If you have more than one package waiting or in transit, the agent asks which one you mean.
+- **Changes need a "yes".** More time, another pickup point, a new date and a return all start with a preview. Nothing is saved until you confirm in your next message. Sending a package and marking it as dropped off don't ask.
+- **More than one package.** If you have more than one package waiting or in transit, the agent names the one it means, or asks you, before it changes anything. `Where is my package?` shows the newest one and mentions the others.
 - **The first reply can be slow.** After about 15 minutes with no messages, the first reply takes a few extra seconds.
 - **Deadlines** end at 23:59, Buenos Aires time.
 
