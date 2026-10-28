@@ -86,3 +86,7 @@ Deployed in the DinoCloud dev account and verified end to end on a real WhatsApp
 ## Team
 
 DinoCloud AppDev practice: Nicolás Grondona (TL), Santiago Larsen, Leandro Espíndola, Rocco Sittoni, with Lucas Donadio. Built for the AWS CDS Agentic AI Hackathon on a synthetic dataset; no HOP code, data or customers are used.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

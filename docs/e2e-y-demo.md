@@ -4,7 +4,7 @@ Recorrido completo sobre el número de testing, y el guión para presentar.
 Los tests unitarios cubren cada pieza por separado (189 en 15 archivos); acá se
 verifica que encajan de punta a punta contra WhatsApp real.
 
-Card: [Prueba E2E con número de testing + guión de demo](https://app.clickup.com/t/86e3pnw17)
+Card: Prueba E2E con número de testing + guión de demo (ClickUp, interno)
 
 ## Estado
 

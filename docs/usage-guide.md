@@ -1,6 +1,6 @@
 # Usage guide: WhatsApp package-tracking agent
 
-> DinoCloud Internal - Confidential · Hackathon PoC · synthetic data, except your phone number
+> Hackathon PoC · synthetic data, except your phone number
 
 A WhatsApp agent that tells customers where their package is. Customers can also sort out the pickup on their own: more time, another pickup point, a new delivery date, or a return. When a package reaches its pickup point, the customer gets a WhatsApp notice without asking for it.
 
