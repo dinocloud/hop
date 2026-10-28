@@ -1,6 +1,6 @@
 # HOP · WhatsApp package agent on AWS
 
-> DinoCloud Internal - Confidential · AWS CDS Agentic AI Hackathon, October 2026 · all data is synthetic
+> AWS CDS Agentic AI Hackathon, October 2026 · a DinoCloud project · all data is synthetic
 
 An agentic WhatsApp assistant for **HOP**, a network of neighbourhood pickup points in Argentina. Customers get told when their package is ready, ask where it is, and sort out the pickup themselves: more time, another pickup point, a new delivery date, or a return. Built on **AWS End User Messaging Social** (WhatsApp) and **Amazon Bedrock AgentCore**, fully serverless, defined in AWS CDK.
 
@@ -47,7 +47,7 @@ Requirements: Node.js 22+, npm, AWS CLI v2. No Docker.
 git clone git@github.com:dinocloud/hop.git && cd hop
 npm ci
 npm run typecheck && npm run lint && npm run format:check   # static checks
-npm test                                                   # 223 unit and infra tests
+npm test                                                   # 200+ unit and infra tests
 npm run build:agent && npm run smoke:agent                 # bundle the agent and load it like the runtime does
 npm run synth                                              # cdk synth --strict with cdk-nag, no credentials needed
 ```

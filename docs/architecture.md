@@ -1,6 +1,6 @@
 # Architecture
 
-> DinoCloud Internal - Confidential · all data is synthetic
+> AWS CDS Agentic AI Hackathon · a DinoCloud project · all data is synthetic
 
 ![Architecture](diagrams/architecture.png)
 

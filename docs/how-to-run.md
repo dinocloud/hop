@@ -1,6 +1,6 @@
 # How to run
 
-> DinoCloud Internal - Confidential · all data is synthetic
+> AWS CDS Agentic AI Hackathon · a DinoCloud project · all data is synthetic
 
 Everything you need to go from a clean clone to a working WhatsApp agent: local checks, deployment, seed data, trying each flow, and watching it in CloudWatch. For the design, see [Architecture](architecture.md); for the message-by-message script, see the [usage guide](usage-guide.md).
 
@@ -12,24 +12,30 @@ Everything you need to go from a clean clone to a working WhatsApp agent: local 
 | AWS CLI v2 | any recent | seed data, manual checks, one-time setup |
 | Git + GitHub access | | `dinocloud/hop`, pull requests, Actions |
 
-No Docker, no Python. The agent is bundled with esbuild and deployed to AgentCore Runtime as a zip (direct code deploy), and the Lambdas are bundled the same way.
+No Docker. Python is only needed if you regenerate the architecture diagram (`docs/diagrams/architecture.py`), never to build, test or deploy. The agent is bundled with esbuild and deployed to AgentCore Runtime as a zip (direct code deploy), and the Lambdas are bundled the same way.
 
 **AWS account**: the project lives in the DinoCloud dev account (`359328299440`, `us-east-1`), which is shared with other projects. Every resource is prefixed `hop-hackathon-`. The WhatsApp number, the WhatsApp Business Account and the SNS topic for inbound messages were set up once by hand and are only read by the stack (their IDs live in SSM under `/hop-hackathon/dev/whatsapp/*`).
 
 ### Credentials
 
-Scripts and the AWS CLI work with the SSO profile:
+**Day to day** (seed, test scripts, reading logs, `cdk diff`): the SSO profile is enough. It is the same identity for every command in this guide unless stated otherwise.
 
 ```bash
 aws sso login --profile dino-dev
 export AWS_PROFILE=dino-dev AWS_REGION=us-east-1
 ```
 
-The CDK CLI does not resolve the `sso-session` profile format on its own. When you run CDK locally (only needed for the one-time setup, or for `cdk diff`), export plain credentials first:
+The CDK CLI does not resolve the `sso-session` profile format on its own. For `cdk diff` or `cdk synth` against the account, export the profile's credentials first; this does not change which permissions you have:
+
+```bash
+eval "$(aws configure export-credentials --profile dino-dev --format env)"
+export AWS_REGION=us-east-1
+```
+
+**One-time setup only** (deploying the OIDC role, section 4): creating IAM roles needs administrator rights. Use the admin SSO role for that single command and go back to `dino-dev` afterwards. Nothing else in this guide needs it, and no deploy ever runs from a laptop.
 
 ```bash
 eval "$(aws configure export-credentials --profile AdministratorAccess-359328299440 --format env)"
-export AWS_REGION=us-east-1
 ```
 
 ## 2. Install and check
@@ -46,7 +52,7 @@ Run the same checks CI runs, in the same order:
 npm run typecheck      # tsc --noEmit
 npm run lint           # ESLint (typescript-eslint)
 npm run format:check   # Prettier
-npm test               # vitest: 223 tests in 16 files
+npm test               # vitest: 200+ unit and infra tests
 npm run build:agent    # bundles agent/src into agent/dist/index.js (~2.5 MB, CommonJS)
 npm run smoke:agent    # loads the bundle from a folder WITHOUT node_modules, as the runtime does
 npm run synth          # cdk synth --strict with cdk-nag; no AWS credentials needed
@@ -96,7 +102,7 @@ The reply is `{ "text": "...", "location": { lat, lng, name, address } | null }`
 
 Only needed for a new account or repo:
 
-1. Deploy the OIDC role. It reuses the GitHub OIDC provider that already exists in the account and can only assume the CDK bootstrap roles of the region.
+1. Deploy the OIDC role, with the admin credentials from section 1 (the only step that needs them). It reuses the GitHub OIDC provider that already exists in the account and can only assume the CDK bootstrap roles of the region.
    ```bash
    npm run deploy:ci-role
    ```
@@ -112,7 +118,7 @@ Everything configurable is in `cdk.json` context; nothing is hardcoded in code:
 | Context key | Default | What it is |
 | --- | --- | --- |
 | `hop:account`, `hop:region`, `hop:stage` | `359328299440`, `us-east-1`, `dev` | Target environment |
-| `hop:templateName` / `hop:templateLanguage` | `paquete_listo` / `es_AR` or `en` | WhatsApp template used by the proactive notice; both translations are approved by Meta, the context picks which one goes out |
+| `hop:templateName` / `hop:templateLanguage` | `paquete_listo` / `es_AR` | WhatsApp template used by the proactive notice. The template is approved by Meta in `es_AR` and `en`; set the language to the one you want the notice in |
 | `hop:metaApiVersion` | `v23.0` | Cloud API version passed to End User Messaging Social |
 | `hop:agentModelId` | `us.anthropic.claude-sonnet-5-5` | Bedrock inference profile for the agent |
 | `hop:githubRepo`, `hop:githubSubjectPrefix` | | OIDC trust for the deploy role |
