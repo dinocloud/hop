@@ -5,9 +5,17 @@ Bot de WhatsApp para los Puntos HOP sobre **AWS End User Messaging Social** y **
 - **Aviso proactivo**: cuando el paquete llega al Punto HOP, un sistema externo pega a un hook y la persona recibe una plantilla de WhatsApp ("tu paquete está listo, tenés X días").
 - **Consulta**: la persona escribe "¿dónde está mi paquete?" y un agente responde estado, horarios y la ubicación del punto como mensaje de ubicación.
 
+Para probarlo, ver la [guía de uso](docs/usage-guide.md) (en inglés): qué número usar, qué casos probar y qué tiene que pasar en cada uno.
+
 Tablero de tareas: lista "Hop Team - Hackthon" en ClickUp.
 
 ## Arquitectura
+
+![Arquitectura](docs/diagrams/architecture.png)
+
+El diagrama se genera desde `docs/diagrams/architecture.py`, con la skill `aws-diagram` del toolkit de DinoCloud. Si cambia el stack, actualizá el script y regeneralo con `~/.dino/aws-diagram/.venv/bin/python docs/diagrams/architecture.py`.
+
+El detalle, con los nombres de los recursos:
 
 ```
 Sistema de envíos ──POST /packages/{trackingId}/status (API key)──► API Gateway ──► Lambda package-status-hook ──► DynamoDB Packages
