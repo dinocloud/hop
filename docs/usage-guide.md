@@ -75,4 +75,4 @@ The template is in Spanish, as Meta approved it. Testers can't trigger it, becau
 | "I can't find your package" | You wrote from another phone, or gave a tracking number that isn't yours. | Ask `Where is my package?` without a tracking number. |
 | No reply after about a minute | Something failed along the way. | Tell the team the time you wrote. They can follow your chat in the logs. |
 
-For the team: [E2E runbook and demo script](e2e-y-demo.md) · [follow a conversation in CloudWatch](../README.md#seguir-una-conversación).
+For the team: [E2E runbook and demo script](e2e-y-demo.md) · [follow a conversation in CloudWatch](referencia-tecnica.md#seguir-una-conversación).
