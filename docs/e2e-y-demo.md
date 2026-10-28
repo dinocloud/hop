@@ -11,12 +11,27 @@ Card: [Prueba E2E con número de testing + guión de demo](https://app.clickup.c
 | Flujo | Estado |
 |---|---|
 | A — consulta (entrante → agente → texto + ubicación) | ✅ verificado 2026-10-22 |
-| B — aviso proactivo (hook → plantilla) | ⏳ espera la plantilla aprobada en Meta |
-| C — resolución desde el chat (`extend_deadline`) | ✅ verificado 2026-10-22 |
+| B — aviso proactivo (hook → plantilla) | ✅ verificado 2026-10-27 |
+| C — resolución desde el chat | ✅ verificado: las seis acciones (detalle abajo) |
 
-Del Flujo C se probó `extend_deadline`. Las otras tres acciones (`change_hop_point`,
-`reschedule_delivery`, `request_return`) comparten el mismo camino —el agente confirma y
-escribe en `Packages`— pero no se ejercitaron contra el stack.
+El Flujo B se probó con un paquete nuevo para un teléfono del equipo. El hook respondió `202`
+con `notified: true`, el paquete quedó con `readyNotificationStatus: SENT` y la plantilla
+llegó con las tres variables en su lugar.
+
+Del Flujo C se verificaron las seis acciones de su tabla, cada una contra DynamoDB:
+
+| Acción | Cuándo y por qué canal |
+|---|---|
+| `extend_deadline` | 2026-10-22 por WhatsApp real; 2026-10-28 por runtime directo |
+| `change_hop_point`, `reschedule_delivery`, `request_return` | 2026-10-26 y 2026-10-28, por runtime directo |
+| `send_package`, `confirm_dropoff` | 2026-10-28, por runtime directo |
+
+"Runtime directo" es `invoke-agent-runtime` contra AgentCore, sin pasar por WhatsApp ni por la
+Lambda de entrada, con paquetes descartables y teléfonos inventados. `extend_deadline`,
+`change_hop_point`, `reschedule_delivery` y `request_return` pidieron confirmación y no
+escribieron nada con el preview. Con el "sí", dejaron en `Packages` lo que dice la tabla de
+acciones del README. `send_package` y `confirm_dropoff` escriben sin pedir confirmación, como
+indica el prompt.
 
 ## Antes de empezar
 
@@ -109,7 +124,7 @@ npm run publish:inbound -- +54911XXXXXXXX "¿dónde está mi paquete?"
 
 ## Flujo B — aviso proactivo (hook → plantilla)
 
-Depende de que `paquete_listo` esté aprobada en Meta.
+La plantilla `paquete_listo` está aprobada en Meta desde el 2026-10-23.
 
 ```bash
 API_URL=$(aws cloudformation describe-stacks --stack-name hop-hackathon-dev \
@@ -123,14 +138,44 @@ curl -s -X POST "${API_URL}packages/HOP-0003/status" \
   -d '{"status":"READY_AT_HOP","hopPointId":"hop-palermo","deadlineDays":5}' | jq .
 ```
 
-**Esperado**: `202` con `notified: true` y un `messageId`, y la plantilla llega al teléfono.
+**Esperado**: `202` con `notified: true` y un `messageId`, y la plantilla llega al teléfono:
 
-Si vuelve `notified: false`, la plantilla no está aprobada todavía. El estado igual quedó
-guardado y queda `readyNotificationStatus: FAILED` en el paquete; repetir el mismo POST
-cuando Meta apruebe la reenvía.
+> Hola Carla, tu paquete ya está en Punto HOP Palermo. Tenés 5 días para retirarlo. Si
+> necesitás más tiempo, cambiar de punto o reprogramar, respondé este mensaje.
 
-Usar `HOP-0003` y no `HOP-0001`: el seed deja a `HOP-0001` ya en `READY_AT_HOP`, y un repetido
-para el mismo punto responde `duplicate: true` sin reenviar nada.
+Si vuelve `notified: false`, la plantilla no salió o no se sabe si salió. En los tres casos el
+estado nuevo ya quedó guardado. Qué hacer depende de la respuesta:
+
+| Respuesta | Causa | ¿Repetir el mismo POST? |
+|---|---|---|
+| `503` | Throttling o falla transitoria de AWS. La plantilla no salió. | Sí, es seguro. |
+| `202`, y el paquete queda con `readyNotificationStatus: FAILED` | Error permanente: validación, permisos o un recurso que no existe. | Es seguro, pero va a fallar igual hasta corregir la causa. |
+| `202`, sin marcar `FAILED` | Timeout o corte de conexión: no se sabe si la plantilla salió. | Solo si no llegó, porque puede llegar dos veces. |
+
+`readyNotificationError` guarda solo el nombre de la excepción, no un motivo legible. El log
+del hook distingue los dos `202`: `No se pudo enviar la plantilla` (error permanente, con el
+mensaje completo) o `Resultado del envío de la plantilla desconocido` (timeout). Para buscarlo
+por `trackingId`, ver [Seguir una conversación](../README.md#seguir-una-conversación). Para ver
+cómo quedó el aviso en el paquete:
+
+```bash
+aws dynamodb get-item --table-name hop-hackathon-packages \
+  --key '{"trackingId":{"S":"HOP-0003"}}' \
+  --query 'Item.{aviso:readyNotificationStatus.S,error:readyNotificationError.S}'
+```
+
+Usar `HOP-0003`, que el seed deja `IN_TRANSIT`: es el caso real, un paquete que llega al punto.
+`HOP-0001` ya está `READY_AT_HOP`, pero el seed no le marca el aviso como enviado, así que el
+POST también le manda la plantilla y le recalcula el plazo. `duplicate: true` aparece recién al
+repetir el POST para el mismo punto después de un envío exitoso
+(`readyNotificationStatus: SENT`), y entonces el hook no reenvía nada.
+
+Para mandar la plantilla a otro teléfono sin tocar el seed, crear un paquete en camino y usar
+su `trackingId` en el POST:
+
+```bash
+npm run add:package -- +54911XXXXXXXX --name Ana --status IN_TRANSIT
+```
 
 ## Flujo C — resolución desde el chat
 
@@ -204,7 +249,7 @@ confirmación y recién ahí escribe. Mostrar el `get-item` con el `deadlineAt` 
 diferencia entre que lo diga y que lo haga.
 Después: *"actually, send it to Belgrano"* → cambia de punto y el paquete vuelve a `IN_TRANSIT`.
 
-**5. El aviso proactivo** (30 s, si la plantilla está aprobada)
+**5. El aviso proactivo** (30 s)
 Correr el POST del Flujo B. La plantilla llega sola: la disparó el sistema de envíos, no una
 persona.
 
@@ -218,7 +263,8 @@ Runtime con deploy de código directo, sin contenedor; y el modelo nunca inventa
 | Síntoma | Causa más probable | Qué hacer |
 |---|---|---|
 | "No encontré el paquete" | **estás escribiendo desde un teléfono sin paquetes asociados** | ver abajo |
-| La plantilla no llega | no está aprobada en Meta | seguir con el Flujo A, que no la necesita |
+| La plantilla no llega y el POST dijo `duplicate: true` | ese paquete ya tenía el aviso enviado para ese punto | repetir con un paquete en camino: uno nuevo de `add:package`, o `HOP-0003` si todavía no se usó |
+| La plantilla no llega y el POST dijo `notified: false` | falló el envío, o no se sabe si salió (las tres causas están en el Flujo B) | con `503` o `FAILED`, repetir el POST; si no, seguir con el Flujo A, que no la necesita |
 | No contesta la consulta | ventana de 24 h cerrada | escribir desde el teléfono primero |
 | Tarda y responde la disculpa | sesión de AgentCore levantando | reintentar; el primer mensaje después de 15 min de inactividad es el lento |
 | Dos mensajes seguidos y el segundo se disculpa | se encolan por sesión y el segundo se queda sin tiempo | mandar de a uno en la demo |
