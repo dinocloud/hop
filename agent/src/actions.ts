@@ -132,7 +132,9 @@ export function createActionTools(deps: ActionToolDeps) {
             trackingId: pkg.trackingId,
             days,
             currentDeadlineLocal: formatDayInBuenosAires(current),
+            currentDeadlineDate: isoDateInBuenosAires(current),
             newDeadlineLocal: formatDayInBuenosAires(extended),
+            newDeadlineDate: isoDateInBuenosAires(extended),
           },
           patch: { status: 'READY_AT_HOP', hopPointId: pkg.hopPointId, deadlineAt: extended.toISOString() },
         };
@@ -183,7 +185,12 @@ export function createActionTools(deps: ActionToolDeps) {
         if (daysAhead < 1 || daysAhead > MAX_RESCHEDULE_DAYS)
           return `Se puede reprogramar entre mañana y dentro de ${MAX_RESCHEDULE_DAYS} días`;
         return {
-          preview: { action: 'reschedule_delivery', trackingId: pkg.trackingId, scheduledLocal: formatDayInBuenosAires(scheduled) },
+          preview: {
+            action: 'reschedule_delivery',
+            trackingId: pkg.trackingId,
+            scheduledLocal: formatDayInBuenosAires(scheduled),
+            scheduledDate: isoDateInBuenosAires(scheduled),
+          },
           patch: { status: 'IN_TRANSIT', scheduledAt: scheduled.toISOString(), resetReadyNotification: true },
         };
       }),

@@ -1,14 +1,25 @@
 {
   "name": "paquete_listo",
-  "language": "es_AR",
   "category": "UTILITY",
-  "components": [
-    {
-      "type": "BODY",
-      "text": "Hola {{1}}, tu paquete ya está en {{2}}. Tenés {{3}} días para retirarlo. Si necesitás más tiempo, cambiar de punto o reprogramar, respondé este mensaje.",
-      "example": {
-        "body_text": [["Ana", "Punto Palermo", "5"]]
+  "_nota": "Mismo nombre, dos idiomas. El que se usa lo fija hop:templateLanguage en cdk.json.",
+  "languages": {
+    "es_AR": [
+      {
+        "type": "BODY",
+        "text": "Hola {{1}}, tu paquete ya está en {{2}}. Tenés {{3}} días para retirarlo. Si necesitás más tiempo, cambiar de punto o reprogramar, respondé este mensaje.",
+        "example": {
+          "body_text": [["Ana", "Punto Palermo", "5"]]
+        }
       }
-    }
-  ]
+    ],
+    "en": [
+      {
+        "type": "BODY",
+        "text": "Hi {{1}}, your package is ready for pickup at {{2}}. You have {{3}} days to collect it. Reply to this message if you need more time, a different HOP Point, or to reschedule.",
+        "example": {
+          "body_text": [["Lean", "Punto HOP Palermo", "5"]]
+        }
+      }
+    ]
+  }
 }

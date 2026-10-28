@@ -132,6 +132,20 @@ AWS_PROFILE=dino-dev npm run send:test -- +5491112345678 location               
 
 ## Plantilla de WhatsApp (`paquete_listo`)
 
+> **Dos idiomas bajo el mismo nombre.** WhatsApp admite varias traducciones de una plantilla:
+> `es_AR` y `en`, las dos aprobadas. La que usa el hook la fija `hop:templateLanguage` en
+> `cdk.json` (hoy `en`, para que el aviso y el agente hablen el mismo idioma).
+>
+> Se crean y consultan desde AWS, sin pasar por la Graph API de Meta:
+>
+> ```bash
+> WABA=$(aws socialmessaging list-linked-whatsapp-business-accounts --query 'linkedAccounts[0].id' --output text)
+> aws socialmessaging list-whatsapp-message-templates --id "$WABA" \
+>   --query 'templates[].{nombre:templateName,idioma:templateLanguage,estado:templateStatus}' --output table
+> aws socialmessaging create-whatsapp-message-template --id "$WABA" --template-definition "fileb://tpl.json"
+> ```
+
+
 El aviso proactivo lo inicia la empresa, así que tiene que ser una plantilla aprobada por Meta. La definición está en `templates/paquete_listo.json`.
 
 | Campo | Valor |

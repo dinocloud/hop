@@ -114,8 +114,10 @@ describe('tools del agente', () => {
       status: 'READY_AT_HOP',
       hopPointId: 'hop-palermo',
       deadlineLocal: 'jueves 22 de octubre',
+      deadlineDate: '2026-10-22',
       daysLeft: 5,
       scheduledLocal: null,
+      scheduledDate: null,
       updatedAt: '2026-10-17T12:00:00Z',
     });
     expect(JSON.stringify(res)).not.toContain('5678');
@@ -125,8 +127,23 @@ describe('tools del agente', () => {
   it('las fechas llegan al modelo ya escritas en hora de Buenos Aires, sin el ISO en UTC que corre el día', async () => {
     const { byName } = setup();
     const res = await byName['get_package_by_tracking']!.invoke({ trackingId: 'HOP-0001' });
-    expect(res).toMatchObject({ found: true, package: { deadlineLocal: 'jueves 22 de octubre', daysLeft: 5 } });
+    // El plazo guardado es 2026-10-23T02:59:59Z, que en BA es el jueves 22 a las 23:59. Las dos
+    // versiones tienen que decir el 22, no el 23: el modelo no convierte zonas horarias.
+    expect(res).toMatchObject({
+      found: true,
+      package: { deadlineLocal: 'jueves 22 de octubre', deadlineDate: '2026-10-22', daysLeft: 5 },
+    });
     expect(JSON.stringify(res)).not.toContain('T02:59:59');
+  });
+
+  it('da la fecha en ISO además de en español, para poder redactarla en otro idioma', async () => {
+    const { byName } = setup();
+    const res = (await byName['get_package_by_tracking']!.invoke({ trackingId: 'HOP-0001' })) as {
+      package: { deadlineLocal: string; deadlineDate: string };
+    };
+    // Sin la ISO, una respuesta en inglés arrastra la fecha en español ("until miércoles 28").
+    expect(res.package.deadlineDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(res.package.deadlineLocal).toMatch(/de octubre/);
   });
 
   it('get_package_by_tracking solo devuelve paquetes del cliente de la sesión', async () => {
