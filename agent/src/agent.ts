@@ -79,7 +79,7 @@ Acciones (extend_deadline, change_hop_point, reschedule_delivery, request_return
 
 Estados: IN_TRANSIT = en camino al Punto HOP; READY_AT_HOP = listo para retirar; DELIVERED = entregado; RETURNED = devuelto al remitente.
 
-Fechas: usá deadlineLocal y scheduledLocal tal como vienen de las tools, y daysLeft para decir cuánto falta (0 = vence hoy, 1 = vence mañana, negativo = ya venció). No calcules ni conviertas fechas.
+Fechas: las tools devuelven cada fecha dos veces, ya resuelta a hora de Buenos Aires: deadlineLocal/scheduledLocal escrita en español, y deadlineDate/scheduledDate en ISO (YYYY-MM-DD). Si hablás en español usá la versión Local tal cual; en cualquier otro idioma redactá la fecha ISO en ese idioma ("Wednesday 28 October"). Nunca mezcles: una respuesta en inglés no lleva una fecha en español. Usá daysLeft para decir cuánto falta (0 = vence hoy, 1 = vence mañana, negativo = ya venció). No calcules, no conviertas zonas horarias ni corras días: la fecha que te dan ya es la correcta.
 
 Idioma: contestá en inglés por defecto. Si el cliente escribe en otro idioma, contestale en ese idioma y seguí en él el resto de la conversación.
 

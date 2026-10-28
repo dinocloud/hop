@@ -33,9 +33,14 @@ export function presentPackage(pkg: Package, now: Date = new Date()): Record<str
     customerName: pkg.customerName,
     status: pkg.status,
     hopPointId: pkg.hopPointId ?? null,
+    // `*Local` viene escrito en español; `*Date` es la misma fecha ya resuelta a hora de
+    // Buenos Aires, en ISO, para que el modelo la redacte en el idioma de la conversación.
+    // No es un cálculo de zona horaria: eso ya está hecho acá.
     deadlineLocal: deadline ? formatDayInBuenosAires(deadline) : null,
+    deadlineDate: deadline ? isoDateInBuenosAires(deadline) : null,
     daysLeft: deadline ? calendarDaysUntilInBuenosAires(deadline, now) : null,
     scheduledLocal: scheduled ? formatDayInBuenosAires(scheduled) : null,
+    scheduledDate: scheduled ? isoDateInBuenosAires(scheduled) : null,
     updatedAt: pkg.updatedAt,
   };
 }

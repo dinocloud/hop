@@ -134,6 +134,13 @@ describe('createHopAgent', () => {
     expect(SYSTEM_PROMPT).toMatch(/No aclares de quién es un paquete que no es suyo/);
   });
 
+  it('no mezcla idiomas en las fechas', () => {
+    // El bug que se vio en la demo: respuesta en inglés con "until miércoles 28 de octubre".
+    expect(SYSTEM_PROMPT).toMatch(/deadlineDate\/scheduledDate en ISO/);
+    expect(SYSTEM_PROMPT).toMatch(/una respuesta en inglés no lleva una fecha en español/);
+    expect(SYSTEM_PROMPT).toMatch(/No calcules, no conviertas zonas horarias/);
+  });
+
   it('contesta en inglés por defecto y sigue el idioma del cliente', () => {
     expect(SYSTEM_PROMPT).toMatch(/contestá en inglés por defecto/);
     expect(SYSTEM_PROMPT).toMatch(/Si el cliente escribe en otro idioma, contestale en ese idioma/);
