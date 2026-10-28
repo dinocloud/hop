@@ -15,7 +15,7 @@ Tablero de tareas: lista "Hop Team - Hackthon" en ClickUp.
 
 ![Arquitectura](diagrams/architecture.png)
 
-El diagrama se genera desde `diagrams/architecture.py`, con la skill `aws-diagram` del toolkit de DinoCloud. Si cambia el stack, actualizá el script y regeneralo con `~/.dino/aws-diagram/.venv/bin/python docs/diagrams/architecture.py`.
+El diagrama se genera desde `diagrams/architecture.py`, con la skill `aws-diagram` del toolkit de DinoCloud: su `setup.sh` crea el venv con `diagrams` y el módulo `aws_diagram_theme`. Si cambia el stack, actualizá el script y regeneralo con `~/.dino/aws-diagram/.venv/bin/python docs/diagrams/architecture.py`.
 
 El detalle, con los nombres de los recursos:
 
